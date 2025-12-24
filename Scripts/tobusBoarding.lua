@@ -37,8 +37,7 @@ local s_per_pax = 4
 
 local s_per_pax_cfg = 4 -- seconds per pax in cfg
 local SIMBRIEF_LOADED = false
-local SIMBRIEF_ERROR = nil  -- error message to display in UI
-local GROUND_OPS_ERROR = nil  -- error message when ground ops blocked
+local last_error = nil  -- nil = all good, string = error message (displayed in red)
 local SETTINGS_FILENAME = "/tobus/tobus_settings.ini"
 local SIMBRIEF_FLIGHTPLAN_FILENAME = "simbrief.json"
 local SIMBRIEF_ACCOUNT_NAME = ""
@@ -727,19 +726,19 @@ local function saveSettings()
 end
 
 local function fetchData()
-    SIMBRIEF_ERROR = nil  -- clear any previous error
+    last_error = nil  -- clear any previous error
 
     if SIMBRIEF_ACCOUNT_NAME == nil or SIMBRIEF_ACCOUNT_NAME == "" then
-      SIMBRIEF_ERROR = "No SimBrief username configured"
-      log_msg(SIMBRIEF_ERROR)
+      last_error = "No SimBrief username configured"
+      log_msg(last_error)
       return false
     end
 
     local response, statusCode = http.request("http://www.simbrief.com/api/xml.fetcher.php?username=" .. SIMBRIEF_ACCOUNT_NAME .. "&json=1")
 
     if statusCode ~= 200 then
-      SIMBRIEF_ERROR = "SimBrief API error: " .. tostring(statusCode)
-      log_msg(SIMBRIEF_ERROR)
+      last_error = "SimBrief API error: " .. tostring(statusCode)
+      log_msg(last_error)
       return false
     end
 
@@ -753,8 +752,8 @@ local function fetchData()
     local ofp = json.decode(response)
 
     if ofp.fetch.status ~= "Success" then
-      SIMBRIEF_ERROR = "SimBrief fetch failed: " .. tostring(ofp.fetch.status)
-      log_msg(SIMBRIEF_ERROR)
+      last_error = "SimBrief fetch failed: " .. tostring(ofp.fetch.status)
+      log_msg(last_error)
       return false
     end
 
@@ -763,8 +762,8 @@ local function fetchData()
     log_msg(string.format("OFP aircraft: %s, loaded aircraft: %s", ofp_icao, MY_PLANE_ICAO))
 
     if ofp_icao ~= MY_PLANE_ICAO then
-      SIMBRIEF_ERROR = string.format("Aircraft mismatch: OFP is for %s, but %s is loaded", ofp_icao, MY_PLANE_ICAO)
-      log_msg("ERROR: " .. SIMBRIEF_ERROR)
+      last_error = string.format("Aircraft mismatch: OFP is for %s, but %s is loaded", ofp_icao, MY_PLANE_ICAO)
+      log_msg("ERROR: " .. last_error)
       return false
     end
 
@@ -868,13 +867,6 @@ function tobusOnBuild(tobus_window, x, y)
             Timers.cancel_all()  -- User adjusted pax, cancel prelim loadsheet timer
         end
 
-        -- Display SimBrief error if any
-        if SIMBRIEF_ERROR ~= nil then
-            imgui.PushStyleColor(imgui.constant.Col.Text, 0xFF4444FF)  -- red
-            imgui.TextUnformatted(SIMBRIEF_ERROR)
-            imgui.PopStyleColor()
-        end
-
         -- Start Boarding buttons
         local instant = false
         local start = imgui.Button("Start Boarding")
@@ -894,7 +886,7 @@ function tobusOnBuild(tobus_window, x, y)
                 toggleTobusWindow()
                 return
             end
-            -- If we get here, boarding was blocked - error is in GROUND_OPS_ERROR
+            -- If we get here, boarding was blocked - error is in last_error
         end
 
         imgui.SameLine()
@@ -916,14 +908,14 @@ function tobusOnBuild(tobus_window, x, y)
                     log_msg(string.format("start deboarding with %0.1f s/pax", s_per_pax))
                 end
             end
-            -- If we get here, deboarding was blocked - error is in GROUND_OPS_ERROR
+            -- If we get here, deboarding was blocked - error is in last_error
         end
     end
 
-    -- Display ground ops error if any
-    if GROUND_OPS_ERROR ~= nil then
+    -- Display error if any
+    if last_error ~= nil then
         imgui.PushStyleColor(imgui.constant.Col.Text, 0xFF4444FF)  -- red
-        imgui.TextUnformatted(GROUND_OPS_ERROR)
+        imgui.TextUnformatted(last_error)
         imgui.PopStyleColor()
     end
 
@@ -1166,12 +1158,12 @@ end
 readSettings()
 
 function tobus_start_boarding_cmd()
-    GROUND_OPS_ERROR = nil  -- clear previous error
+    last_error = nil  -- clear previous error
 
     local can, reason = can_start_boarding()
     if not can then
-        GROUND_OPS_ERROR = "Cannot start boarding: " .. reason
-        log_msg(GROUND_OPS_ERROR)
+        last_error = "Cannot start boarding: " .. reason
+        log_msg(last_error)
         return false
     end
 
@@ -1181,12 +1173,12 @@ function tobus_start_boarding_cmd()
 end
 
 function tobus_start_deboarding_cmd()
-    GROUND_OPS_ERROR = nil  -- clear previous error
+    last_error = nil  -- clear previous error
 
     local can, reason = can_start_deboarding()
     if not can then
-        GROUND_OPS_ERROR = "Cannot start deboarding: " .. reason
-        log_msg(GROUND_OPS_ERROR)
+        last_error = "Cannot start deboarding: " .. reason
+        log_msg(last_error)
         return false
     end
 
