@@ -6,8 +6,7 @@ local MY_PLANE_ICAO = PLANE_ICAO    -- may be stale now for A321 / A21N
 local VERSION = "3.2.2-hotbso"
 
  --http library import
-local xml2lua = require("xml2lua")
-local handler = require("xmlhandler.tree")
+local json = require("json")
 local socket = require "socket"
 local http = require "socket.http"
 local LIP = require("LIP")
@@ -44,7 +43,7 @@ local pax_no_cur, pax_no_tgt, pax_no_deboarding,
 local s_per_pax_cfg = 4 -- seconds per pax in cfg
 local SIMBRIEF_LOADED = false
 local SETTINGS_FILENAME = "/tobus/tobus_settings.ini"
-local SIMBRIEF_FLIGHTPLAN_FILENAME = "simbrief.xml"
+local SIMBRIEF_FLIGHTPLAN_FILENAME = "simbrief.json"
 local SIMBRIEF_ACCOUNT_NAME = ""
 local HOPPIE_LOGON = ""
 local HOPPIE_CPDLC = true
@@ -554,7 +553,7 @@ local function fetchData()
       return false
     end
 
-    local response, statusCode = http.request("http://www.simbrief.com/api/xml.fetcher.php?username=" .. SIMBRIEF_ACCOUNT_NAME)
+    local response, statusCode = http.request("http://www.simbrief.com/api/xml.fetcher.php?username=" .. SIMBRIEF_ACCOUNT_NAME .. "&json=1")
 
     if statusCode ~= 200 then
       log_msg("Simbrief API is not responding, status: " .. tostring(statusCode))
@@ -565,20 +564,17 @@ local function fetchData()
     f:write(response)
     f:close()
 
-    log_msg("Simbrief XML data downloaded")
+    log_msg("Simbrief JSON data downloaded")
 
-    -- Parse XML
-    local xfile = xml2lua.loadFile(SCRIPT_DIRECTORY..SIMBRIEF_FLIGHTPLAN_FILENAME)
-    local parser = xml2lua.parser(handler)
-    parser:parse(xfile)
-    local ofp = handler.root.OFP
+    -- Parse JSON
+    local ofp = json.decode(response)
 
     if ofp.fetch.status ~= "Success" then
-      log_msg("SimBrief XML status is not success: " .. tostring(ofp.fetch.status))
+      log_msg("SimBrief status is not success: " .. tostring(ofp.fetch.status))
       return false
     end
 
-    -- Extract the same data that was previously read from sbh/ datarefs
+    -- Extract OFP data
     pax_no_tgt = tonumber(ofp.weights.pax_count)
     units = ofp.params.units
     operator = ofp.general.icao_airline
