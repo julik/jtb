@@ -43,6 +43,7 @@ local pax_no_cur, pax_no_tgt, pax_no_deboarding,
 local s_per_pax_cfg = 4 -- seconds per pax in cfg
 local SIMBRIEF_LOADED = false
 local SIMBRIEF_ERROR = nil  -- error message to display in UI
+local GROUND_OPS_ERROR = nil  -- error message when ground ops blocked
 local SETTINGS_FILENAME = "/tobus/tobus_settings.ini"
 local SIMBRIEF_FLIGHTPLAN_FILENAME = "simbrief.json"
 local SIMBRIEF_ACCOUNT_NAME = ""
@@ -184,6 +185,33 @@ local function clamp(val, min, max)
     if val < min then return min end
     if val > max then return max end
     return val
+end
+
+-- Check if aircraft is in motion (unsafe for ground operations)
+-- Returns true if groundspeed or rotation rates indicate flight/taxi
+local function flight_in_progress()
+    -- Groundspeed in m/s (0.5 m/s ≈ 1 knot)
+    local groundspeed = get("sim/flightmodel/position/groundspeed")
+    if groundspeed > 0.5 then
+        return true, string.format("Aircraft moving (%.1f m/s)", groundspeed)
+    end
+
+    -- Rotation rates in degrees/second
+    local P = math.abs(get("sim/flightmodel/position/P"))  -- roll rate
+    local Q = math.abs(get("sim/flightmodel/position/Q"))  -- pitch rate
+    local R = math.abs(get("sim/flightmodel/position/R"))  -- yaw rate
+
+    if P > 1.0 or Q > 1.0 or R > 1.0 then
+        return true, string.format("Aircraft rotating (P=%.1f Q=%.1f R=%.1f deg/s)", P, Q, R)
+    end
+
+    -- Beacon on = ground crew should not approach
+    local beacon_on = get("sim/cockpit/electrical/beacon_lights_on") == 1
+    if beacon_on then
+        return true, "Beacon is on - ground services unavailable"
+    end
+
+    return false, nil
 end
 
 -- stepwise linear interpolation
@@ -712,15 +740,16 @@ function tobusOnBuild(tobus_window, x, y)
             end
 
             if start then
-                tobus_start_boarding_cmd()
-                if instant then
-                    boardInstantly()
-                else
-                    log_msg(string.format("start boarding with %0.1f s/pax", s_per_pax))
+                if tobus_start_boarding_cmd() then
+                    if instant then
+                        boardInstantly()
+                    else
+                        log_msg(string.format("start boarding with %0.1f s/pax", s_per_pax))
+                    end
+                    toggleTobusWindow()
+                    return
                 end
-
-                toggleTobusWindow()
-                return
+                -- If we get here, boarding was blocked - error is in GROUND_OPS_ERROR
             end
         end
 
@@ -739,14 +768,23 @@ function tobusOnBuild(tobus_window, x, y)
             end
 
             if start then
-                tobus_start_deboarding_cmd()
-                if instant then
-                    deboardInstantly()
-                else
-                    log_msg(string.format("start deboarding with %0.1f s/pax", s_per_pax))
+                if tobus_start_deboarding_cmd() then
+                    if instant then
+                        deboardInstantly()
+                    else
+                        log_msg(string.format("start deboarding with %0.1f s/pax", s_per_pax))
+                    end
                 end
+                -- If we get here, deboarding was blocked - error is in GROUND_OPS_ERROR
             end
         end
+    end
+
+    -- Display ground ops error if any
+    if GROUND_OPS_ERROR ~= nil then
+        imgui.PushStyleColor(imgui.constant.Col.Text, 0xFF4444FF)  -- red
+        imgui.TextUnformatted(GROUND_OPS_ERROR)
+        imgui.PopStyleColor()
     end
 
     if boardingActive then
@@ -1044,6 +1082,15 @@ end
 readSettings()
 
 function tobus_start_boarding_cmd()
+    GROUND_OPS_ERROR = nil  -- clear previous error
+
+    local in_flight, reason = flight_in_progress()
+    if in_flight then
+        GROUND_OPS_ERROR = "Cannot start boarding: " .. reason
+        log_msg(GROUND_OPS_ERROR)
+        return false
+    end
+
     if not boardingActive and not deboardingActive and not deboardingPaused then
         set("AirbusFBW/NoPax", 0)
         set("AirbusFBW/PaxDistrib", clamp(gauss(0.5, 0.1), 0.35, 0.6))
@@ -1053,10 +1100,22 @@ function tobus_start_boarding_cmd()
             false, false, false, false
         nextTimeBoardingCheck = os.time()
         open_doors()
+        log_msg("Boarding started")
+        return true
     end
+    return false
 end
 
 function tobus_start_deboarding_cmd()
+    GROUND_OPS_ERROR = nil  -- clear previous error
+
+    local in_flight, reason = flight_in_progress()
+    if in_flight then
+        GROUND_OPS_ERROR = "Cannot start deboarding: " .. reason
+        log_msg(GROUND_OPS_ERROR)
+        return false
+    end
+
     if not boardingActive and not deboardingActive and not boardingPaused then
         pax_no_deboarding = tls_pax_no[0]
         pax_no_cur = pax_no_deboarding
@@ -1065,7 +1124,10 @@ function tobus_start_deboarding_cmd()
         deboardingActive = true
         nextTimeBoardingCheck = os.time()
         open_doors()
+        log_msg("Deboarding started")
+        return true
     end
+    return false
 end
 
 add_macro("TOBUS - Your Toliss Boarding Companion", "buildTobusWindow()")
