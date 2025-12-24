@@ -63,6 +63,15 @@ end
 local delayed_init_delay = 10   -- let the dust settle, seconds before delayed init
 
 -------------------------------------------------------------------------------
+-- Logging
+-------------------------------------------------------------------------------
+
+local function log_msg(str)
+    local temp = os.date("*t", os.time())
+    logMsg(string.format("tobus: %02d:%02d:%02d %s", temp.hour, temp.min, temp.sec, str))
+end
+
+-------------------------------------------------------------------------------
 -- State Machine
 -------------------------------------------------------------------------------
 
@@ -228,7 +237,6 @@ local plane_db = {
 }
 
 local plane_data    -- of the current plane
-local log_msg       -- forward
 
 -- gaussian distribution
 local function gauss(mu, sigma)
@@ -1254,11 +1262,6 @@ function tobus_frame()
             transition_to(State.READY)
         end
     end
-end
-
-function log_msg(str) -- custom log function
-  local temp = os.date("*t", os.time())
-  logMsg(string.format("tobus: %02d:%02d:%02d %s", temp.hour, temp.min, temp.sec, str))
 end
 
 -- main
