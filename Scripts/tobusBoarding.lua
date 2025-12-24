@@ -28,17 +28,12 @@ local MAX_PAX_NUMBER = 224
 local fmgs_flight_no = "" -- FMGS flight number
 local tls_flight_no       -- dataref_table for that
 
-local fmgs_init_ts = 1E20
-local prelim_loadsheet_sent = false
-
--- delayed "boarding completed" processing
-local boarding_completed_ts = 1E20
-local final_loadsheet_sent = false
-local doors_closed = false
-
-local pax_no_cur, pax_no_tgt, pax_no_deboarding,
-      boardingActive, deboardingActive, nextTimeBoardingCheck,
-      s_per_pax, boardingPaused, deboardingPaused, deboardingCompleted, boardingCompleted
+-- Operational variables
+local pax_no_cur = 0
+local pax_no_tgt = 0
+local pax_no_deboarding = 0
+local nextTimeBoardingCheck = 0
+local s_per_pax = 4
 
 local s_per_pax_cfg = 4 -- seconds per pax in cfg
 local SIMBRIEF_LOADED = false
@@ -61,6 +56,65 @@ if nil ~= XPLMFindDataRef("opensam/jetway/door/status") then
 end
 
 local delayed_init_delay = 10   -- let the dust settle, seconds before delayed init
+
+-------------------------------------------------------------------------------
+-- State Machine
+-------------------------------------------------------------------------------
+
+local State = {
+    READY = "ready",
+    BOARDING = "boarding",
+    BOARDING_PAUSED = "boarding_paused",
+    DEBOARDING = "deboarding",
+    DEBOARDING_PAUSED = "deboarding_paused",
+}
+
+local current_state = State.READY
+
+-------------------------------------------------------------------------------
+-- Timer System
+-------------------------------------------------------------------------------
+
+local Timers = {
+    active = {},  -- {name -> {fire_at, callback}}
+}
+
+function Timers.schedule(name, delay_seconds, callback)
+    Timers.active[name] = {
+        fire_at = os.time() + delay_seconds,
+        callback = callback,
+    }
+    log_msg(string.format("Timer '%s' scheduled for %ds", name, delay_seconds))
+end
+
+function Timers.cancel(name)
+    if Timers.active[name] then
+        Timers.active[name] = nil
+        log_msg(string.format("Timer '%s' cancelled", name))
+    end
+end
+
+function Timers.cancel_all()
+    local count = 0
+    for name, _ in pairs(Timers.active) do
+        count = count + 1
+    end
+    if count > 0 then
+        log_msg(string.format("Cancelling %d timer(s)", count))
+        Timers.active = {}
+    end
+end
+
+function Timers.tick()
+    local now = os.time()
+    for name, timer in pairs(Timers.active) do
+        if now >= timer.fire_at then
+            Timers.active[name] = nil  -- remove before callback (allows reschedule)
+            log_msg(string.format("Timer '%s' fired", name))
+            timer.callback()
+        end
+    end
+end
 
 local plane_db = {
     A319_160 = {
@@ -475,28 +529,128 @@ local function playChimeSound(boarding)
     wait_until_speak = os.time() + 0.5
 end
 
+-------------------------------------------------------------------------------
+-- State Transitions
+-------------------------------------------------------------------------------
+
+local function on_exit_state(state)
+    -- Cleanup when leaving a state
+    if state == State.BOARDING_PAUSED or state == State.DEBOARDING_PAUSED then
+        -- If leaving paused state via Reset, close doors (handled in transition_to)
+    end
+end
+
+local function on_enter_state(state, from_state)
+    if state == State.READY then
+        -- Check if we completed an operation
+        if from_state == State.BOARDING and pax_no_cur == pax_no_tgt then
+            -- Boarding just completed
+            playChimeSound(true)
+            Timers.cancel("prelim_loadsheet")  -- final supersedes prelim
+            Timers.schedule("close_doors", 30, close_doors)
+            Timers.schedule("final_loadsheet", 60, generate_final_loadsheet)
+        elseif from_state == State.DEBOARDING and get("AirbusFBW/NoPax") == 0 then
+            -- Deboarding just completed
+            playChimeSound(false)
+            close_doors()
+        elseif from_state == State.BOARDING_PAUSED or from_state == State.DEBOARDING_PAUSED then
+            -- User clicked Reset - close doors, no chime
+            close_doors()
+        end
+
+    elseif state == State.BOARDING then
+        open_doors()
+        set("AirbusFBW/NoPax", 0)
+        pax_no_cur = 0
+        set("AirbusFBW/PaxDistrib", clamp(gauss(0.5, 0.1), 0.35, 0.6))
+        nextTimeBoardingCheck = os.time()
+
+    elseif state == State.DEBOARDING then
+        open_doors()
+        pax_no_deboarding = tls_pax_no[0]
+        pax_no_cur = pax_no_deboarding
+        nextTimeBoardingCheck = os.time()
+
+    -- BOARDING_PAUSED and DEBOARDING_PAUSED have no entry actions
+    end
+end
+
+local function transition_to(new_state)
+    if current_state == new_state then
+        return  -- No-op if already in this state
+    end
+
+    -- Cancel all timers on state transition (user took action)
+    Timers.cancel_all()
+
+    -- Run exit actions for old state
+    on_exit_state(current_state)
+
+    local old_state = current_state
+    current_state = new_state
+
+    -- Run entry actions for new state
+    on_enter_state(new_state, old_state)
+
+    log_msg(string.format("State: %s -> %s", old_state, new_state))
+end
+
+-- Precondition checks
+local function can_start_boarding()
+    if current_state ~= State.READY then
+        return false, "Operation already in progress"
+    end
+    local in_flight, reason = flight_in_progress()
+    if in_flight then
+        return false, reason
+    end
+    if pax_no_tgt <= 0 then
+        return false, "Set passenger target first"
+    end
+    return true, nil
+end
+
+local function can_start_deboarding()
+    if current_state ~= State.READY then
+        return false, "Operation already in progress"
+    end
+    local in_flight, reason = flight_in_progress()
+    if in_flight then
+        return false, reason
+    end
+    local current_pax = get("AirbusFBW/NoPax")
+    if current_pax <= 0 then
+        return false, "No passengers to deboard"
+    end
+    return true, nil
+end
+
 local function boardInstantly()
+    open_doors()
     set("AirbusFBW/NoPax", pax_no_tgt)
     pax_no_cur = pax_no_tgt
-    boardingActive = true
-    boardingCompleted = false
-    command_once("AirbusFBW/SetWeightAndCG")    -- that runs async so we need postprocessing in the draw loop
+    set("AirbusFBW/PaxDistrib", clamp(gauss(0.5, 0.1), 0.35, 0.6))
+    command_once("AirbusFBW/SetWeightAndCG")
+    -- Transition directly to READY with boarding complete actions
+    current_state = State.BOARDING  -- Set temporarily so on_enter_state knows we came from BOARDING
+    transition_to(State.READY)
 end
 
 local function deboardInstantly()
+    open_doors()
     tls_pax_no[0] = 0
-    deboardingActive = false
-    deboardingCompleted = true
-    playChimeSound(false)
+    pax_no_cur = 0
     command_once("AirbusFBW/SetWeightAndCG")
-    close_doors()
+    -- Transition directly to READY with deboarding complete actions
+    current_state = State.DEBOARDING  -- Set temporarily so on_enter_state knows we came from DEBOARDING
+    transition_to(State.READY)
 end
 
 local function resetAllParameters()
     pax_no_cur = 0
     pax_no_tgt = 0
-    boardingActive = false
-    deboardingActive = false
+    current_state = State.READY
+    Timers.cancel_all()
     nextTimeBoardingCheck = os.time()
     if USE_SECOND_DOOR then
         s_per_pax = s_per_pax_cfg / 2
@@ -504,10 +658,6 @@ local function resetAllParameters()
         s_per_pax = s_per_pax_cfg
     end
     jw1_connected = false
-    boardingPaused = false
-    deboardingPaused = false
-    deboardingCompleted = false
-    boardingCompleted = false
 end
 
 local function readSettings()
@@ -683,33 +833,30 @@ local function delayed_init()
 end
 
 function tobusOnBuild(tobus_window, x, y)
-    if boardingActive and not boardingCompleted then
+    -- Status display based on current state
+    if current_state == State.BOARDING then
         imgui.PushStyleColor(imgui.constant.Col.Text, 0xFF95FFF8)
-        imgui.TextUnformatted(string.format("Boarding in progress %s / %s boarded", pax_no_cur, pax_no_tgt))
+        imgui.TextUnformatted(string.format("Boarding in progress %d / %d boarded", pax_no_cur, pax_no_tgt))
         imgui.PopStyleColor()
-    end
-
-    if deboardingActive and not deboardingCompleted then
+    elseif current_state == State.BOARDING_PAUSED then
+        imgui.PushStyleColor(imgui.constant.Col.Text, 0xFFFFAA00)
+        imgui.TextUnformatted(string.format("Boarding PAUSED %d / %d boarded", pax_no_cur, pax_no_tgt))
+        imgui.PopStyleColor()
+    elseif current_state == State.DEBOARDING then
         imgui.PushStyleColor(imgui.constant.Col.Text, 0xFF95FFF8)
-        imgui.TextUnformatted(string.format("Deboarding in progress %s / %s deboarded", pax_no_cur, pax_no_deboarding))
+        imgui.TextUnformatted(string.format("Deboarding in progress %d / %d remaining", pax_no_cur, pax_no_deboarding))
         imgui.PopStyleColor()
-    end
-
-    if boardingCompleted then
-        imgui.PushStyleColor(imgui.constant.Col.Text, 0xFF43B54B)
-        imgui.TextUnformatted("Boarding completed!!!")
-        imgui.PopStyleColor()
-    end
-
-    if deboardingCompleted then
-        imgui.PushStyleColor(imgui.constant.Col.Text, 0xFF43B54B)
-        imgui.TextUnformatted("Deboarding completed!!!")
+    elseif current_state == State.DEBOARDING_PAUSED then
+        imgui.PushStyleColor(imgui.constant.Col.Text, 0xFFFFAA00)
+        imgui.TextUnformatted(string.format("Deboarding PAUSED %d / %d remaining", pax_no_cur, pax_no_deboarding))
         imgui.PopStyleColor()
     end
 
     local changed, val
-    if not (boardingActive or deboardingActive) then
+    -- Show controls only when in READY state
+    if current_state == State.READY then
         if imgui.Button("Get from simbrief") then
+            Timers.cancel_all()  -- User action cancels timers
             fetchData()
         end
 
@@ -718,6 +865,7 @@ function tobusOnBuild(tobus_window, x, y)
 
         if changed then
             pax_no_tgt = val
+            Timers.cancel_all()  -- User adjusted pax, cancel prelim loadsheet timer
         end
 
         -- Display SimBrief error if any
@@ -726,57 +874,49 @@ function tobusOnBuild(tobus_window, x, y)
             imgui.TextUnformatted(SIMBRIEF_ERROR)
             imgui.PopStyleColor()
         end
-    end
 
-    if not boardingActive and not deboardingActive then
-        if not deboardingPaused then
-            local instant = false
+        -- Start Boarding buttons
+        local instant = false
+        local start = imgui.Button("Start Boarding")
+        imgui.SameLine()
+        if imgui.Button("Instant Boarding") then
+            start = true
+            instant = true
+        end
 
-            local start = imgui.Button("Start Boarding")
-            imgui.SameLine()
-            if imgui.Button("Instant Boarding") then
-                start = true
-                instant = true
-            end
-
-            if start then
-                if tobus_start_boarding_cmd() then
-                    if instant then
-                        boardInstantly()
-                    else
-                        log_msg(string.format("start boarding with %0.1f s/pax", s_per_pax))
-                    end
-                    toggleTobusWindow()
-                    return
+        if start then
+            if tobus_start_boarding_cmd() then
+                if instant then
+                    boardInstantly()
+                else
+                    log_msg(string.format("start boarding with %0.1f s/pax", s_per_pax))
                 end
-                -- If we get here, boarding was blocked - error is in GROUND_OPS_ERROR
+                toggleTobusWindow()
+                return
             end
+            -- If we get here, boarding was blocked - error is in GROUND_OPS_ERROR
         end
 
         imgui.SameLine()
-    end
 
-    if not boardingActive and not deboardingActive then
-        if not boardingPaused then
-            local instant = false
+        -- Start Deboarding buttons
+        instant = false
+        start = imgui.Button("Start Deboarding")
+        imgui.SameLine()
+        if imgui.Button("Instant Deboarding") then
+            start = true
+            instant = true
+        end
 
-            local start = imgui.Button("Start Deboarding")
-            imgui.SameLine()
-            if imgui.Button("Instant Deboarding") then
-                start = true
-                instant = true
-            end
-
-            if start then
-                if tobus_start_deboarding_cmd() then
-                    if instant then
-                        deboardInstantly()
-                    else
-                        log_msg(string.format("start deboarding with %0.1f s/pax", s_per_pax))
-                    end
+        if start then
+            if tobus_start_deboarding_cmd() then
+                if instant then
+                    deboardInstantly()
+                else
+                    log_msg(string.format("start deboarding with %0.1f s/pax", s_per_pax))
                 end
-                -- If we get here, deboarding was blocked - error is in GROUND_OPS_ERROR
             end
+            -- If we get here, deboarding was blocked - error is in GROUND_OPS_ERROR
         end
     end
 
@@ -787,44 +927,40 @@ function tobusOnBuild(tobus_window, x, y)
         imgui.PopStyleColor()
     end
 
-    if boardingActive then
+    -- Pause/Resume buttons based on state
+    if current_state == State.BOARDING then
         imgui.SameLine()
         if imgui.Button("Pause Boarding") then
-            boardingActive = false
-            boardingPaused = true
-            boardingInformationMessage = "Boarding paused."
+            transition_to(State.BOARDING_PAUSED)
         end
-    elseif boardingPaused then
+    elseif current_state == State.BOARDING_PAUSED then
         imgui.SameLine()
         if imgui.Button("Resume Boarding") then
-            boardingActive = true
-            boardingPaused = false
+            transition_to(State.BOARDING)
         end
     end
 
-    if deboardingActive then
+    if current_state == State.DEBOARDING then
         imgui.SameLine()
         if imgui.Button("Pause Deboarding") then
-            deboardingActive = false
-            deboardingPaused = true
+            transition_to(State.DEBOARDING_PAUSED)
         end
-    elseif deboardingPaused then
+    elseif current_state == State.DEBOARDING_PAUSED then
         imgui.SameLine()
         if imgui.Button("Resume Deboarding") then
-            deboardingActive = true
-            deboardingPaused = false
+            transition_to(State.DEBOARDING)
         end
     end
 
-    if boardingPaused or deboardingPaused or boardingCompleted or deboardingCompleted then
+    -- Reset button (only when paused)
+    if current_state == State.BOARDING_PAUSED or current_state == State.DEBOARDING_PAUSED then
         imgui.SameLine()
         if imgui.Button("Reset") then
-            resetAllParameters()
-            close_doors()
+            transition_to(State.READY)
         end
     end
 
-    if not boardingActive and not deboardingActive then
+    if current_state == State.READY then
         jw1_connected = (opensam_door_status ~= nil and opensam_door_status[1] == 1)
 
         if USE_SECOND_DOOR or jw1_connected then
@@ -961,62 +1097,14 @@ function tobus_often()
 
     delayed_init()
 
-    local now = os.time()
+    -- Process timers
+    Timers.tick()
 
+    -- Handle delayed speech
+    local now = os.time()
     if speak_string and now > wait_until_speak then
       XPLMSpeakString(speak_string)
       speak_string = nil
-    end
-
-    -- TODO: FMGS monitoring disabled - boarding no longer depends on FMGS init
-    -- -- check if FMGS flight_no was changed
-    -- local fn  = tls_flight_no[0]
-    -- if fmgs_flight_no ~= fn then    -- change
-    --     if fn == "" then -- FMGS reset or fn cleared
-    --         log_msg("FMGS reset")
-    --         fmgs_flight_no = fn
-    --         SIMBRIEF_LOADED = false
-    --         fmgs_init_ts = 1E20
-    --         return
-    --     end
-    --
-    --     -- FMGS init
-    --     fmgs_flight_no = fn
-    --
-    --     -- if the beacon light is on it's likely a situation load
-    --     if fmgs_flight_no ~= "" and 0 == get("sim/cockpit/electrical/beacon_lights_on") then
-    --         log_msg("FMGS inited: " .. fmgs_flight_no)
-    --         SIMBRIEF_LOADED = false
-    --         fmgs_init_ts = now
-    --         prelim_loadsheet_sent = false
-    --     end
-    --     return
-    -- end
-
-    -- TODO: fix logic bug in prelim loadsheet delivery
-    -- if not prelim_loadsheet_sent and SIMBRIEF_LOADED and now > fmgs_init_ts + 8 then
-    --     log_msg("Send prelim loadsheet")
-    --     generate_prelim_loadsheet()
-    --     prelim_loadsheet_sent = true
-    --     -- after the prelim load sheet a few no shows
-    --     if RANDOMIZE_SIMBRIEF_PASSENGER_NUMBER then
-    --         pax_no_tgt = math.random(pax_no_tgt - 3, pax_no_tgt)
-    --         if pax_no_tgt < 0 then
-    --             pax_no_tgt = 0
-    --         end
-    --     end
-    -- end
-
-    -- delayed "boarding completed" processing
-    if not doors_closed and now > boarding_completed_ts + 30 then
-        doors_closed = true
-        close_doors()
-    end
-
-    if not final_loadsheet_sent and now > boarding_completed_ts + 60 then
-        final_loadsheet_sent = true
-        generate_final_loadsheet()
-        boarding_completed_ts = 1E20
     end
 
     -- for debugging plane_data tables
@@ -1031,7 +1119,7 @@ end
 function tobus_frame()
     local now = os.time()
 
-    if boardingActive then
+    if current_state == State.BOARDING then
         if pax_no_cur < pax_no_tgt and now >= nextTimeBoardingCheck then
             pax_no_cur = pax_no_cur + 1
             tls_pax_no[0] = pax_no_cur
@@ -1040,14 +1128,12 @@ function tobus_frame()
             nextTimeBoardingCheck = os.time() + s_per_pax * clamp(gauss(1.0, 0.2), 0.8, 1.15)
         end
 
-        if pax_no_cur == pax_no_tgt and not boardingCompleted then
-            boardingCompleted = true
-            boardingActive = false
-            playChimeSound(true)
-            boarding_completed_ts = now
+        if pax_no_cur == pax_no_tgt then
+            -- Boarding complete - transition to READY (entry action handles chime, doors, loadsheet)
+            transition_to(State.READY)
         end
 
-    elseif deboardingActive then
+    elseif current_state == State.DEBOARDING then
         if pax_no_cur > 0 and now >= nextTimeBoardingCheck then
             pax_no_cur = pax_no_cur - 1
             tls_pax_no[0] = pax_no_cur
@@ -1055,11 +1141,9 @@ function tobus_frame()
             nextTimeBoardingCheck = os.time() + s_per_pax * clamp(gauss(1.0, 0.2), 0.8, 1.15)
         end
 
-        if pax_no_cur == 0 and not deboardingCompleted then
-            deboardingCompleted = true
-            deboardingActive = false
-            close_doors()
-            playChimeSound(false)
+        if pax_no_cur == 0 then
+            -- Deboarding complete - transition to READY (entry action handles chime, doors)
+            transition_to(State.READY)
         end
     end
 end
@@ -1084,50 +1168,31 @@ readSettings()
 function tobus_start_boarding_cmd()
     GROUND_OPS_ERROR = nil  -- clear previous error
 
-    local in_flight, reason = flight_in_progress()
-    if in_flight then
+    local can, reason = can_start_boarding()
+    if not can then
         GROUND_OPS_ERROR = "Cannot start boarding: " .. reason
         log_msg(GROUND_OPS_ERROR)
         return false
     end
 
-    if not boardingActive and not deboardingActive and not deboardingPaused then
-        set("AirbusFBW/NoPax", 0)
-        set("AirbusFBW/PaxDistrib", clamp(gauss(0.5, 0.1), 0.35, 0.6))
-        pax_no_cur = 0
-        boardingActive = true
-        boardingPaused, boardingCompleted, deboardingCompleted, deboardingPaused =
-            false, false, false, false
-        nextTimeBoardingCheck = os.time()
-        open_doors()
-        log_msg("Boarding started")
-        return true
-    end
-    return false
+    transition_to(State.BOARDING)
+    log_msg("Boarding started")
+    return true
 end
 
 function tobus_start_deboarding_cmd()
     GROUND_OPS_ERROR = nil  -- clear previous error
 
-    local in_flight, reason = flight_in_progress()
-    if in_flight then
+    local can, reason = can_start_deboarding()
+    if not can then
         GROUND_OPS_ERROR = "Cannot start deboarding: " .. reason
         log_msg(GROUND_OPS_ERROR)
         return false
     end
 
-    if not boardingActive and not deboardingActive and not boardingPaused then
-        pax_no_deboarding = tls_pax_no[0]
-        pax_no_cur = pax_no_deboarding
-        boardingPaused, boardingActive, boardingCompleted, deboardingCompleted, deboardingPaused =
-            false, false, false, false, false
-        deboardingActive = true
-        nextTimeBoardingCheck = os.time()
-        open_doors()
-        log_msg("Deboarding started")
-        return true
-    end
-    return false
+    transition_to(State.DEBOARDING)
+    log_msg("Deboarding started")
+    return true
 end
 
 add_macro("TOBUS - Your Toliss Boarding Companion", "buildTobusWindow()")
