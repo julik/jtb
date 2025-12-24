@@ -844,8 +844,7 @@ local function fetchData()
     ofp_data = nil    -- clear previous OFP data (allows retry)
 
     if SIMBRIEF_ACCOUNT_NAME == nil or SIMBRIEF_ACCOUNT_NAME == "" then
-      last_error = "No SimBrief username configured"
-      log_msg(last_error)
+      set_last_error("No SimBrief username configured")
       return false
     end
 
@@ -853,8 +852,7 @@ local function fetchData()
     local response, err = http_get(url, 3)  -- 3 attempts with short timeouts
 
     if not response then
-      last_error = "SimBrief API error: " .. tostring(err)
-      log_msg(last_error)
+      set_last_error("SimBrief API error: " .. tostring(err))
       return false
     end
 
@@ -868,8 +866,7 @@ local function fetchData()
     local ofp = json.decode(response)
 
     if ofp.fetch.status ~= "Success" then
-      last_error = "SimBrief fetch failed: " .. tostring(ofp.fetch.status)
-      log_msg(last_error)
+      set_last_error("SimBrief fetch failed: " .. tostring(ofp.fetch.status))
       return false
     end
 
@@ -1281,8 +1278,7 @@ function tobus_start_boarding_cmd()
 
     local can, reason = can_start_boarding()
     if not can then
-        last_error = "Cannot start boarding: " .. reason
-        log_msg(last_error)
+        set_last_error("Cannot start boarding: " .. reason)
         return false
     end
 
@@ -1296,8 +1292,7 @@ function tobus_start_deboarding_cmd()
 
     local can, reason = can_start_deboarding()
     if not can then
-        last_error = "Cannot start deboarding: " .. reason
-        log_msg(last_error)
+        set_last_error("Cannot start deboarding: " .. reason)
         return false
     end
 
