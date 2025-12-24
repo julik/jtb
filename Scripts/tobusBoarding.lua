@@ -237,6 +237,14 @@ local function clamp(val, min, max)
     return val
 end
 
+-- Set error, log it, and speak it aloud
+local function set_last_error(message)
+    last_error = message
+    logMsg("tobus: ERROR: " .. message)
+    speak_string = message
+    wait_until_speak = os.time() + 0.5
+end
+
 -- Check if aircraft is in motion (unsafe for ground operations)
 -- Returns true if groundspeed or rotation rates indicate flight/taxi
 local function flight_in_progress()
@@ -308,6 +316,11 @@ end
 
 local function send_loadsheet(ls_content)
     if not ofp_data then return end  -- guard against missing OFP data
+
+    if fmgs_flight_no == "" then
+        set_last_error("Cannot send loadsheet: flight number not set in MCDU INIT page")
+        return
+    end
 
     ls_content = ls_content:gsub("\n", "%%0A")
 
