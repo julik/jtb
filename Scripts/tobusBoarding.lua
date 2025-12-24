@@ -17,13 +17,11 @@ local speak_string
 
 local tls_pax_no    -- dataref_table AirbusFBW/NoPax
 local tank_content_array -- dataref_table
-local units --simbrief
-local operator --simbrief
-local pax_no_tgt -- simbrief, target after several randomizations
-local taxiFuel --simbrief
-local mzfw --simbrief
-local mtow --simbrief
 local MAX_PAX_NUMBER = 224
+
+-- SimBrief OFP data (nil = not loaded, table = loaded)
+-- Contains: operator, units, taxi_fuel, mzfw, mtow
+local ofp_data = nil
 
 local fmgs_flight_no = "" -- FMGS flight number
 local tls_flight_no       -- dataref_table for that
@@ -36,7 +34,6 @@ local nextTimeBoardingCheck = 0
 local s_per_pax = 4
 
 local s_per_pax_cfg = 4 -- seconds per pax in cfg
-local SIMBRIEF_LOADED = false
 local last_error = nil  -- nil = all good, string = error message (displayed in red)
 local SETTINGS_FILENAME = "/tobus/tobus_settings.ini"
 local SIMBRIEF_FLIGHTPLAN_FILENAME = "simbrief.json"
@@ -310,6 +307,7 @@ local function format_ls_row(label, value, digit)
 end
 
 local function send_loadsheet(ls_content)
+    if not ofp_data then return end  -- guard against missing OFP data
 
     ls_content = ls_content:gsub("\n", "%%0A")
 
@@ -317,14 +315,14 @@ local function send_loadsheet(ls_content)
     if HOPPIE_CPDLC then
         payload = string.format("logon=%s&from=%s&to=%s&type=%s&packet=%s",
             HOPPIE_LOGON,
-            operator .. "OPS",
+            ofp_data.operator .. "OPS",
             fmgs_flight_no,
             'cpdlc',
             "/data2/313//NE/" .. ls_content)
     else
         payload = string.format("logon=%s&from=%s&to=%s&type=%s&packet=%s",
             HOPPIE_LOGON,
-            operator .. "OPS",
+            ofp_data.operator .. "OPS",
             fmgs_flight_no,
             'telex',
             ls_content)
@@ -346,7 +344,7 @@ local function send_loadsheet(ls_content)
 end
 
 local function generate_final_loadsheet()
-    if not SIMBRIEF_LOADED or HOPPIE_LOGON == "" then
+    if not ofp_data or HOPPIE_LOGON == "" then
         log_msg("LOADSHEET UNAVAIL DUE TO NO SIMBRIEF DATA OR MISSING HOPPIE LOGIN")
         return
     end
@@ -359,7 +357,7 @@ local function generate_final_loadsheet()
     end
 
     local fob_uu
-    if units == "lbs" then
+    if ofp_data.units == "lbs" then
         fob_uu = 100 * math.floor(fob_kg * kg2lbs / 100 + 0.35)    -- conservative rounding
     else
         fob_uu = 100 * math.floor(fob_kg / 100 + 0.35)
@@ -367,14 +365,14 @@ local function generate_final_loadsheet()
 
     local zfw_kg = plane_data.oew + cargo_kg + tls_pax_no[0] * 100 -- hard coded pax weight of 100kg by ToLiss
     local zfw_uu = zfw_kg
-    if units == "lbs" then
+    if ofp_data.units == "lbs" then
         zfw_uu = zfw_kg * kg2lbs
     end
 
     log_msg(string.format("fob_kg: %d, fob_uu: %d, zfw_kg: %d, zfw_uu: %d",
             fob_kg, fob_uu, zfw_kg, zfw_uu))
 
-    local tow_uu = zfw_uu + fob_uu - taxiFuel
+    local tow_uu = zfw_uu + fob_uu - ofp_data.taxi_fuel
 
     local zfwcg = "EFB"
     if cargo_kg <= 20 then  -- cargo is currently unsupported, account for rounding errors
@@ -398,7 +396,7 @@ local function generate_final_loadsheet()
         pax = string.format("%d", tls_pax_no[0])
     }
 
-    if zfw_uu > mzfw or tow_uu > mtow then
+    if zfw_uu > ofp_data.mzfw or tow_uu > ofp_data.mtow then
         ls.msg = "LOAD+DISCREPANCY:+RETURN+TO+GATE"
     else
         ls.msg = nil
@@ -412,7 +410,7 @@ local function generate_final_loadsheet()
         format_ls_row("TOW", ls.tow, 9),
         format_ls_row("GWCG", ls.gwcg, 9),
         format_ls_row("FOB", ls.fob, 9),
-        format_ls_row("UNITS", units, 9),
+        format_ls_row("UNITS", ofp_data.units, 9),
     }, "\n")
 
     if ls.msg ~= nil then
@@ -423,7 +421,7 @@ local function generate_final_loadsheet()
 end
 
 local function generate_prelim_loadsheet()
-    if not SIMBRIEF_LOADED or HOPPIE_LOGON == "" then
+    if not ofp_data or HOPPIE_LOGON == "" then
         log_msg("LOADSHEET UNAVAIL DUE TO NO SIMBRIEF DATA OR MISSING HOPPIE LOGIN")
         return
     end
@@ -433,21 +431,21 @@ local function generate_prelim_loadsheet()
     local zfwcg = get("toliss_airbus/init/ZFWCG")
 
     local block_fuel_uu
-    if units == "lbs" then
+    if ofp_data.units == "lbs" then
         block_fuel_uu = 100 * math.floor(block_fuel_kg * kg2lbs / 100 + 0.35)    -- conservative rounding
     else
         block_fuel_uu = 100 * math.floor(block_fuel_kg / 100 + 0.35)
     end
 
     local zfw_uu = zfw_kg
-    if units == "lbs" then
+    if ofp_data.units == "lbs" then
         zfw_uu = zfw_kg * kg2lbs
     end
 
     log_msg(string.format("block_fuel_kg: %d, block_fuel_uu: %d, zfw_kg: %d, zfw_uu: %d",
             block_fuel_kg, block_fuel_uu, zfw_kg, zfw_uu))
 
-    local tow_uu = zfw_uu + block_fuel_uu - taxiFuel
+    local tow_uu = zfw_uu + block_fuel_uu - ofp_data.taxi_fuel
 
     local ls = {    -- in user units
         title = "Prelim",
@@ -459,7 +457,7 @@ local function generate_prelim_loadsheet()
         pax = string.format("%d", pax_no_tgt)
     }
 
-    if zfw_uu > mzfw or tow_uu > mtow then
+    if zfw_uu > ofp_data.mzfw or tow_uu > ofp_data.mtow then
         ls.msg = "LOAD+DISCREPANCY:+CHECK"
     else
         ls.msg = nil
@@ -473,7 +471,7 @@ local function generate_prelim_loadsheet()
         format_ls_row("TOW", ls.tow, 9),
         -- format_ls_row("GWCG", ls.gwcg, 9),
         format_ls_row("BFUEL", ls.fob, 9),
-        format_ls_row("UNITS", units, 9),
+        format_ls_row("UNITS", ofp_data.units, 9),
     }, "\n")
 
     if ls.msg ~= nil then
@@ -727,6 +725,7 @@ end
 
 local function fetchData()
     last_error = nil  -- clear any previous error
+    ofp_data = nil    -- clear previous OFP data (allows retry)
 
     if SIMBRIEF_ACCOUNT_NAME == nil or SIMBRIEF_ACCOUNT_NAME == "" then
       last_error = "No SimBrief username configured"
@@ -767,13 +766,8 @@ local function fetchData()
       return false
     end
 
-    -- Extract OFP data
+    -- Extract OFP data into table
     pax_no_tgt = tonumber(ofp.weights.pax_count)
-    units = ofp.params.units
-    operator = ofp.general.icao_airline
-    taxiFuel = tonumber(ofp.fuel.taxi)
-    mzfw = tonumber(ofp.weights.max_zfw)
-    mtow = tonumber(ofp.weights.max_tow)
 
     local max_pax = ofp.aircraft.max_passengers
     log_msg(string.format("max_pax: '%s'", max_pax))
@@ -794,7 +788,16 @@ local function fetchData()
         log_msg(string.format("randomized pax_no_tgt: %d", pax_no_tgt))
     end
 
-    SIMBRIEF_LOADED = true
+    -- Store OFP data for loadsheet generation
+    ofp_data = {
+        operator = ofp.general.icao_airline,
+        units = ofp.params.units,
+        taxi_fuel = tonumber(ofp.fuel.taxi),
+        mzfw = tonumber(ofp.weights.max_zfw),
+        mtow = tonumber(ofp.weights.max_tow),
+    }
+
+    log_msg("SimBrief OFP loaded successfully")
     return true
 end
 
@@ -832,6 +835,13 @@ local function delayed_init()
 end
 
 function tobusOnBuild(tobus_window, x, y)
+    -- Display error prominently at top if any
+    if last_error ~= nil then
+        imgui.PushStyleColor(imgui.constant.Col.Text, 0xFF4444FF)  -- red
+        imgui.TextUnformatted(last_error)
+        imgui.PopStyleColor()
+    end
+
     -- Status display based on current state
     if current_state == State.BOARDING then
         imgui.PushStyleColor(imgui.constant.Col.Text, 0xFF95FFF8)
@@ -910,13 +920,6 @@ function tobusOnBuild(tobus_window, x, y)
             end
             -- If we get here, deboarding was blocked - error is in last_error
         end
-    end
-
-    -- Display error if any
-    if last_error ~= nil then
-        imgui.PushStyleColor(imgui.constant.Col.Text, 0xFF4444FF)  -- red
-        imgui.TextUnformatted(last_error)
-        imgui.PopStyleColor()
     end
 
     -- Pause/Resume buttons based on state
