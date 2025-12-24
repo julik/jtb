@@ -42,6 +42,7 @@ local pax_no_cur, pax_no_tgt, pax_no_deboarding,
 
 local s_per_pax_cfg = 4 -- seconds per pax in cfg
 local SIMBRIEF_LOADED = false
+local SIMBRIEF_ERROR = nil  -- error message to display in UI
 local SETTINGS_FILENAME = "/tobus/tobus_settings.ini"
 local SIMBRIEF_FLIGHTPLAN_FILENAME = "simbrief.json"
 local SIMBRIEF_ACCOUNT_NAME = ""
@@ -548,15 +549,19 @@ local function saveSettings()
 end
 
 local function fetchData()
+    SIMBRIEF_ERROR = nil  -- clear any previous error
+
     if SIMBRIEF_ACCOUNT_NAME == nil or SIMBRIEF_ACCOUNT_NAME == "" then
-      log_msg("No simbrief username has been configured")
+      SIMBRIEF_ERROR = "No SimBrief username configured"
+      log_msg(SIMBRIEF_ERROR)
       return false
     end
 
     local response, statusCode = http.request("http://www.simbrief.com/api/xml.fetcher.php?username=" .. SIMBRIEF_ACCOUNT_NAME .. "&json=1")
 
     if statusCode ~= 200 then
-      log_msg("Simbrief API is not responding, status: " .. tostring(statusCode))
+      SIMBRIEF_ERROR = "SimBrief API error: " .. tostring(statusCode)
+      log_msg(SIMBRIEF_ERROR)
       return false
     end
 
@@ -570,7 +575,18 @@ local function fetchData()
     local ofp = json.decode(response)
 
     if ofp.fetch.status ~= "Success" then
-      log_msg("SimBrief status is not success: " .. tostring(ofp.fetch.status))
+      SIMBRIEF_ERROR = "SimBrief fetch failed: " .. tostring(ofp.fetch.status)
+      log_msg(SIMBRIEF_ERROR)
+      return false
+    end
+
+    -- Validate aircraft type matches
+    local ofp_icao = ofp.aircraft.icaocode
+    log_msg(string.format("OFP aircraft: %s, loaded aircraft: %s", ofp_icao, MY_PLANE_ICAO))
+
+    if ofp_icao ~= MY_PLANE_ICAO then
+      SIMBRIEF_ERROR = string.format("Aircraft mismatch: OFP is for %s, but %s is loaded", ofp_icao, MY_PLANE_ICAO)
+      log_msg("ERROR: " .. SIMBRIEF_ERROR)
       return false
     end
 
@@ -679,6 +695,13 @@ function tobusOnBuild(tobus_window, x, y)
 
             if changed then
                 pax_no_tgt = val
+            end
+
+            -- Display SimBrief error if any
+            if SIMBRIEF_ERROR ~= nil then
+                imgui.PushStyleColor(imgui.constant.Col.Text, 0xFF4444FF)  -- red
+                imgui.TextUnformatted(SIMBRIEF_ERROR)
+                imgui.PopStyleColor()
             end
         end
 
