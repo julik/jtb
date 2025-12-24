@@ -265,12 +265,14 @@ local function http_get(url, max_attempts)
     local last_err = nil
 
     for attempt = 1, max_attempts do
-        local body, code = http.request{
+        local response_body = {}
+        local result, code = http.request{
             url = url,
+            sink = ltn12.sink.table(response_body),
             create = create_short_timeout_socket,
         }
         if code == 200 then
-            return body, code
+            return table.concat(response_body), code
         end
         last_err = string.format("attempt %d: code=%s", attempt, tostring(code))
         logMsg(string.format("tobus: HTTP GET %s - %s", url:sub(1, 50), last_err))
