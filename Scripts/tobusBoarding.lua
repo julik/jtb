@@ -32,8 +32,7 @@ local MAX_PAX_NUMBER = 224
 -- Contains: operator, units, taxi_fuel, mzfw, mtow
 local ofp_data = nil
 
-local fmgs_flight_no = "" -- FMGS flight number
-local tls_flight_no       -- dataref_table for that
+local tls_flight_no       -- dataref_table for flight number
 
 -- Operational variables
 local pax_no_cur = 0
@@ -437,7 +436,13 @@ end
 local function send_loadsheet(ls_content)
     if not ofp_data then return end  -- guard against missing OFP data
 
-    if fmgs_flight_no == "" then
+    -- Read flight number fresh from FMGS each time we send
+    local flight_no = ""
+    if tls_flight_no then
+        flight_no = tls_flight_no[0] or ""
+    end
+
+    if flight_no == "" then
         set_last_error("Cannot send loadsheet: flight number not set in MCDU INIT page")
         return
     end
@@ -449,14 +454,14 @@ local function send_loadsheet(ls_content)
         payload = string.format("logon=%s&from=%s&to=%s&type=%s&packet=%s",
             HOPPIE_LOGON,
             ofp_data.operator .. "OPS",
-            fmgs_flight_no,
+            flight_no,
             'cpdlc',
             "/data2/313//NE/" .. ls_content)
     else
         payload = string.format("logon=%s&from=%s&to=%s&type=%s&packet=%s",
             HOPPIE_LOGON,
             ofp_data.operator .. "OPS",
-            fmgs_flight_no,
+            flight_no,
             'telex',
             ls_content)
     end
