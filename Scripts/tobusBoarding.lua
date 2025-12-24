@@ -1102,6 +1102,19 @@ function tobusOnBuild(tobus_window, x, y)
 
     imgui.Separator()
 
+    -- Manual loadsheet send button (for testing)
+    if not ofp_data then
+        imgui.PushStyleColor(imgui.constant.Col.Button, 0xFF666666)
+        imgui.PushStyleColor(imgui.constant.Col.ButtonHovered, 0xFF666666)
+        imgui.PushStyleColor(imgui.constant.Col.ButtonActive, 0xFF666666)
+        imgui.Button("Send Loadsheet Now")
+        imgui.PopStyleColor(3)
+    else
+        if imgui.Button("Send Loadsheet Now") then
+            generate_final_loadsheet()
+        end
+    end
+
     if imgui.TreeNode("Settings") then
         local changed, newval = imgui.SliderFloat("Boarding speed", s_per_pax_cfg, 1, 6, "s / pax: %.1f")
         if changed then
