@@ -4,6 +4,16 @@
 
 This document proposes a clean state machine architecture to replace the current ad-hoc state handling in TOBUS. The current implementation uses multiple overlapping boolean flags and timestamps that can enter inconsistent states, leading to bugs around FMGS resets, HTTP blocking, and incomplete cleanup.
 
+## Design Philosophy
+
+**The state machine should represent what the script is currently DOING, not the aircraft's overall state.**
+
+The aircraft's state (passenger count, velocity, beacon) is **external data** that informs what operations are valid. We don't need to track "who loaded the passengers" or "is FMGS initialized" - we just need to know:
+
+1. Is an operation (boarding/deboarding) currently in progress?
+2. Is it safe to start an operation? (checked via `flight_in_progress()`)
+3. Are there passengers to deboard? (checked via current pax count)
+
 ## Current State Analysis
 
 ### Current State Variables (The Problem)
@@ -33,85 +43,75 @@ Timestamps:
 2. **Scattered transitions**: State changes happen in `tobus_often()`, `tobus_frame()`, UI callbacks, and command handlers
 3. **Magic timestamps**: Using `1E20` as "disabled" is fragile and unclear
 4. **No cleanup on transitions**: When state changes, related timers/flags may not be reset
-5. **FMGS reset chaos**: If FMGS resets during boarding, only some state is cleared
-6. **HTTP in main loop**: Loadsheet delivery blocks the simulator
-7. **No single source of truth**: Must inspect multiple variables to determine "what state are we in?"
+5. **HTTP in main loop**: Loadsheet delivery blocks the simulator
+6. **No single source of truth**: Must inspect multiple variables to determine "what state are we in?"
 
 ---
 
 ## Proposed State Machine
 
-### Primary States
+### Primary States (Simplified)
+
+The states represent **what TOBUS is currently doing**, not the aircraft lifecycle:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                              STATE DIAGRAM                                   │
 └─────────────────────────────────────────────────────────────────────────────┘
 
-    ┌──────────────┐
-    │ UNINITIALIZED│  (plugin just loaded, waiting for aircraft datarefs)
-    └──────┬───────┘
-           │ delayed_init() succeeds
-           ▼
-    ┌──────────────┐
-    │    IDLE      │  (ready, no flight plan active)
-    └──────┬───────┘
-           │ FMGS flight number set (and beacon off)
-           ▼
-    ┌──────────────┐
-    │ FLIGHT_READY │  (FMGS initialized, can fetch SimBrief)
-    └──────┬───────┘
-           │ fetchData() succeeds
-           ▼
-    ┌──────────────┐
-    │  OFP_LOADED  │  (SimBrief data loaded, ready for operations)
-    └──────┬───────┘
-           │
-     ┌─────┴─────┐
-     ▼           ▼
-┌─────────┐  ┌───────────┐
-│BOARDING │  │DEBOARDING │
-└────┬────┘  └─────┬─────┘
-     │             │
-     ▼             ▼
-┌─────────────┐  ┌───────────────┐
-│BOARDING_    │  │DEBOARDING_    │
-│PAUSED       │  │PAUSED         │
-└─────────────┘  └───────────────┘
-     │             │
-     ▼             ▼
-┌─────────────┐  ┌───────────────┐
-│BOARDING_    │  │DEBOARDING_    │
-│COMPLETED    │  │COMPLETED      │
-└─────────────┘  └───────────────┘
-     │
-     ▼
-┌─────────────┐
-│POST_BOARDING│  (doors closing, loadsheet pending)
-└─────────────┘
+                        ┌───────────┐
+                        │   READY   │  (no operation in progress)
+                        └─────┬─────┘
+                              │
+              ┌───────────────┼───────────────┐
+              │               │               │
+              ▼               │               ▼
+       ┌───────────┐          │        ┌─────────────┐
+       │ BOARDING  │◄─────────┴───────►│ DEBOARDING  │
+       └─────┬─────┘                   └──────┬──────┘
+             │                                │
+             ▼                                ▼
+       ┌───────────┐                   ┌─────────────┐
+       │ BOARDING  │                   │ DEBOARDING  │
+       │ _PAUSED   │                   │ _PAUSED     │
+       └───────────┘                   └─────────────┘
 ```
 
 ### State Definitions
 
 ```lua
 local State = {
-    UNINITIALIZED = "uninitialized",     -- Plugin loaded, waiting for init
-    IDLE = "idle",                        -- Initialized, no active flight
-    FLIGHT_READY = "flight_ready",        -- FMGS has flight number, can fetch OFP
-    OFP_LOADED = "ofp_loaded",            -- SimBrief data loaded successfully
+    READY = "ready",                      -- No operation in progress, can start boarding or deboarding
     BOARDING = "boarding",                -- Actively boarding passengers
     BOARDING_PAUSED = "boarding_paused",  -- Boarding paused by user
-    BOARDING_COMPLETED = "boarding_completed", -- All passengers boarded
-    POST_BOARDING = "post_boarding",      -- Doors closing, loadsheet pending
     DEBOARDING = "deboarding",            -- Actively deboarding passengers
     DEBOARDING_PAUSED = "deboarding_paused",
-    DEBOARDING_COMPLETED = "deboarding_completed",
 }
 
-local current_state = State.UNINITIALIZED
+local current_state = State.READY
 ```
 
----
+### Key Insight: External State vs Script State
+
+**External state** (read from datarefs, not tracked by script):
+- `current_pax` = `get("AirbusFBW/NoPax")` - How many passengers are aboard RIGHT NOW
+- `flight_in_progress()` - Is it safe for ground ops?
+- SimBrief data - Optional enhancement, not required for core functionality
+
+**Script state** (what we're currently doing):
+- `current_state` - One of: READY, BOARDING, BOARDING_PAUSED, DEBOARDING, DEBOARDING_PAUSED
+- `pax_no_tgt` - Target for boarding (only relevant during BOARDING states)
+
+### Valid Operations Based on External State
+
+| Current Pax | Flight In Progress | Can Board? | Can Deboard? |
+|-------------|-------------------|------------|--------------|
+| 0           | No                | Yes        | No (no pax)  |
+| 0           | Yes               | No         | No           |
+| > 0         | No                | Yes*       | Yes          |
+| > 0         | Yes               | No         | No           |
+
+*Boarding with pax already aboard would add to existing count (edge case, may want to warn user)
 
 ## State Transitions
 
@@ -119,44 +119,52 @@ local current_state = State.UNINITIALIZED
 
 | From State | Event | To State | Actions |
 |------------|-------|----------|---------|
-| UNINITIALIZED | `delayed_init()` succeeds | IDLE | Initialize datarefs, load settings |
-| IDLE | FMGS flight_no set (beacon off) | FLIGHT_READY | Clear OFP data, record timestamp |
-| FLIGHT_READY | User clicks "Get from simbrief" (success) | OFP_LOADED | Parse OFP, set pax target |
-| FLIGHT_READY | User sets pax manually + starts boarding | BOARDING | (skip OFP) |
-| OFP_LOADED | User clicks "Start Boarding" | BOARDING | Open doors, init pax counter |
+| READY | User clicks "Start Boarding" + `!flight_in_progress()` | BOARDING | Open doors, set pax to 0, init counter |
+| READY | User clicks "Start Deboarding" + `!flight_in_progress()` + `pax > 0` | DEBOARDING | Open doors, init counter from current pax |
 | BOARDING | User clicks "Pause" | BOARDING_PAUSED | — |
 | BOARDING_PAUSED | User clicks "Resume" | BOARDING | — |
-| BOARDING | `pax_no_cur == pax_no_tgt` | BOARDING_COMPLETED | Play chime, start post-boarding timer |
-| BOARDING_COMPLETED | User clicks "Reset" | FLIGHT_READY or OFP_LOADED | Reset boarding state |
-| BOARDING_COMPLETED | Timer expires (30s) | POST_BOARDING | Close doors |
-| POST_BOARDING | Timer expires (60s) | OFP_LOADED | Send final loadsheet |
-| OFP_LOADED | User clicks "Start Deboarding" | DEBOARDING | Open doors, init counter |
-| DEBOARDING | `pax_no_cur == 0` | DEBOARDING_COMPLETED | Play chime, close doors |
-| * | FMGS reset (flight_no = "") | IDLE | **Full reset** |
-| * | FMGS changed to different flight | FLIGHT_READY | Clear OFP, reset operations |
+| BOARDING_PAUSED | User clicks "Reset" | READY | Close doors, cancel timers |
+| BOARDING | `pax_no_cur == pax_no_tgt` | READY | Play chime, close doors, (optionally send loadsheet) |
+| DEBOARDING | User clicks "Pause" | DEBOARDING_PAUSED | — |
+| DEBOARDING_PAUSED | User clicks "Resume" | DEBOARDING | — |
+| DEBOARDING_PAUSED | User clicks "Reset" | READY | Close doors, cancel timers |
+| DEBOARDING | `pax_no_cur == 0` | READY | Play chime, close doors |
 
-### Reset Behaviors
+### Pre-conditions for Starting Operations
 
-#### Soft Reset (User clicks "Reset" button)
-Returns to `FLIGHT_READY` or `OFP_LOADED` (depending on whether OFP was loaded):
+```lua
+function can_start_boarding()
+    if current_state ~= State.READY then return false, "Operation in progress" end
+    if flight_in_progress() then return false, reason end
+    if pax_no_tgt <= 0 then return false, "Set passenger target first" end
+    return true, nil
+end
+
+function can_start_deboarding()
+    if current_state ~= State.READY then return false, "Operation in progress" end
+    if flight_in_progress() then return false, reason end
+    local current_pax = get("AirbusFBW/NoPax")
+    if current_pax <= 0 then return false, "No passengers to deboard" end
+    return true, nil
+end
+```
+
+### Deboarding External Loads
+
+**Key requirement**: Users must be able to deboard passengers that were loaded externally (via EFB, situation file, etc.).
+
+This works automatically because:
+1. We check `get("AirbusFBW/NoPax")` directly - we don't track "who loaded them"
+2. If `current_pax > 0` and `!flight_in_progress()`, deboarding is allowed
+3. No dependency on SimBrief, FMGS, or any prior TOBUS operations
+
+### Reset Behavior
+
+**Reset** (User clicks "Reset" button during paused state):
+- Transition to READY
 - Cancel any pending timers
-- Reset pax counters
-- Close doors (optionally)
-- Keep: FMGS flight number, SimBrief data, settings
-
-#### Hard Reset (FMGS cleared or changed)
-Returns to `IDLE` or `FLIGHT_READY`:
-- Cancel ALL pending timers
-- Reset ALL operational state
-- Clear SimBrief data
-- Reset pax counters
-- Preserve: Settings, aircraft data
-
-#### Clean Slate Reset (Manual full reset)
-Returns to `IDLE`:
-- Everything from Hard Reset
-- Additionally allows user to confirm before abrupt pax/fuel changes
-- Gradual pax reduction if mid-operation (prevent physics glitches)
+- Close doors
+- Does NOT change passenger count (leave aircraft as-is)
 
 ---
 
@@ -168,8 +176,7 @@ Replace scattered timestamp variables with a centralized timer system:
 
 ```lua
 local Timers = {
-    -- Timer definition: {callback, fire_time, repeating}
-    active = {},  -- currently scheduled timers
+    active = {},  -- currently scheduled timers: {name -> {fire_at, callback}}
 }
 
 function Timers.schedule(name, delay_seconds, callback)
@@ -200,33 +207,26 @@ end
 
 ### Defined Timers
 
-| Timer Name | Delay | Triggered In State | Action |
-|------------|-------|-------------------|--------|
-| `speak_completion` | 0.5s | BOARDING_COMPLETED, DEBOARDING_COMPLETED | `XPLMSpeakString()` |
-| `close_doors` | 30s | BOARDING_COMPLETED | Close passenger/cargo doors |
-| `final_loadsheet` | 60s | BOARDING_COMPLETED | Send final loadsheet via Hoppie |
-| `prelim_loadsheet` | 8s | OFP_LOADED (if auto-enabled) | Send prelim loadsheet |
+| Timer Name | Delay | Triggered By | Action |
+|------------|-------|--------------|--------|
+| `speak_completion` | 0.5s | Boarding/deboarding reaching target | `XPLMSpeakString()` |
+| `close_doors` | 30s | Boarding completion | Close passenger/cargo doors |
+| `final_loadsheet` | 60s | Boarding completion | Send final loadsheet via Hoppie |
+
+Note: Timers fire during READY state (after operation completes). They handle post-completion housekeeping.
 
 ### Timer Cleanup on State Transition
 
 ```lua
 local function transition_to(new_state)
-    -- Cancel timers that don't apply to new state
-    local timers_to_cancel = {
-        [State.IDLE] = {"close_doors", "final_loadsheet", "prelim_loadsheet", "speak_completion"},
-        [State.FLIGHT_READY] = {"close_doors", "final_loadsheet", "speak_completion"},
-        [State.BOARDING] = {"close_doors", "final_loadsheet"},
-        -- etc.
-    }
-
-    for _, timer_name in ipairs(timers_to_cancel[new_state] or {}) do
-        Timers.cancel(timer_name)
+    -- Cancel all timers when starting a new operation
+    if new_state == State.BOARDING or new_state == State.DEBOARDING then
+        Timers.cancel_all()
     end
 
     -- Run exit actions for old state
     on_exit_state(current_state)
 
-    -- Update state
     local old_state = current_state
     current_state = new_state
 
@@ -245,49 +245,33 @@ end
 
 ```lua
 local function on_enter_state(state, from_state)
-    if state == State.IDLE then
-        -- Clear all operational data
-        SIMBRIEF_LOADED = false
-        SIMBRIEF_ERROR = nil
-        pax_no_tgt = 0
-        fmgs_flight_no = ""
-
-    elseif state == State.FLIGHT_READY then
-        -- Ready for OFP fetch
-        SIMBRIEF_LOADED = false
-        SIMBRIEF_ERROR = nil
-
-    elseif state == State.OFP_LOADED then
-        -- Could auto-schedule prelim loadsheet here
-        -- Timers.schedule("prelim_loadsheet", 8, generate_prelim_loadsheet)
+    if state == State.READY then
+        -- Returned to idle - check if we completed an operation
+        if from_state == State.BOARDING and pax_no_cur == pax_no_tgt then
+            -- Boarding just completed
+            playChimeSound(true)
+            Timers.schedule("close_doors", 30, close_doors)
+            Timers.schedule("final_loadsheet", 60, generate_final_loadsheet)
+        elseif from_state == State.DEBOARDING and get("AirbusFBW/NoPax") == 0 then
+            -- Deboarding just completed
+            playChimeSound(false)
+            close_doors()  -- Immediate for deboarding
+        end
+        -- Note: If from_state was PAUSED and user clicked Reset, doors are closed
+        -- but no chime (operation was cancelled, not completed)
 
     elseif state == State.BOARDING then
         open_doors()
-        pax_no_cur = 0
         set("AirbusFBW/NoPax", 0)
+        pax_no_cur = 0
         set("AirbusFBW/PaxDistrib", clamp(gauss(0.5, 0.1), 0.35, 0.6))
-
-    elseif state == State.BOARDING_COMPLETED then
-        playChimeSound(true)
-        Timers.schedule("close_doors", 30, function()
-            close_doors()
-            transition_to(State.POST_BOARDING)
-        end)
-
-    elseif state == State.POST_BOARDING then
-        Timers.schedule("final_loadsheet", 30, function()  -- 60s total from boarding complete
-            generate_final_loadsheet()
-            transition_to(State.OFP_LOADED)
-        end)
 
     elseif state == State.DEBOARDING then
         open_doors()
-        pax_no_deboarding = tls_pax_no[0]
-        pax_no_cur = pax_no_deboarding
+        pax_no_cur = get("AirbusFBW/NoPax")  -- Read current count from dataref
 
-    elseif state == State.DEBOARDING_COMPLETED then
-        playChimeSound(false)
-        close_doors()
+    -- BOARDING_PAUSED and DEBOARDING_PAUSED have no entry actions
+    -- (state persists, just stops incrementing/decrementing)
     end
 end
 ```
@@ -296,13 +280,11 @@ end
 
 ```lua
 local function on_exit_state(state)
-    if state == State.BOARDING or state == State.BOARDING_PAUSED then
-        -- If exiting boarding unexpectedly, ensure clean state
-
-    elseif state == State.POST_BOARDING then
-        -- Clear post-boarding timers if leaving early
-        Timers.cancel("final_loadsheet")
+    if state == State.BOARDING_PAUSED or state == State.DEBOARDING_PAUSED then
+        -- If leaving paused state via Reset, close doors
+        -- (If resuming, doors stay open - handled by target state)
     end
+    -- Most cleanup is handled by transition_to() or entry actions
 end
 ```
 
@@ -314,98 +296,84 @@ This matrix defines which state transitions are valid:
 
 ```
                     To State →
-From State ↓    UNINIT  IDLE  FLIGHT  OFP    BOARD  B_PAUSE  B_COMP  POST   DEBOARD  D_PAUSE  D_COMP
-─────────────────────────────────────────────────────────────────────────────────────────────────────
-UNINITIALIZED     -      ✓      -      -       -       -        -      -       -        -        -
-IDLE              -      -      ✓      -       -       -        -      -       -        -        -
-FLIGHT_READY      -      ✓      -      ✓       ✓       -        -      -       ✓        -        -
-OFP_LOADED        -      ✓      ✓      -       ✓       -        -      -       ✓        -        -
-BOARDING          -      ✓      ✓      -       -       ✓        ✓      -       -        -        -
-BOARDING_PAUSED   -      ✓      ✓      ✓       ✓       -        -      -       -        -        -
-BOARDING_COMP     -      ✓      ✓      ✓       -       -        -      ✓       -        -        -
-POST_BOARDING     -      ✓      ✓      ✓       -       -        -      -       -        -        -
-DEBOARDING        -      ✓      ✓      -       -       -        -      -       -        ✓        ✓
-DEBOARDING_PAUSE  -      ✓      ✓      ✓       -       -        -      -       ✓        -        -
-DEBOARDING_COMP   -      ✓      ✓      ✓       -       -        -      -       -        -        -
+From State ↓       READY   BOARDING   B_PAUSED   DEBOARDING   D_PAUSED
+─────────────────────────────────────────────────────────────────────────
+READY                -        ✓          -           ✓           -
+BOARDING             ✓        -          ✓           -           -
+BOARDING_PAUSED      ✓        ✓          -           -           -
+DEBOARDING           ✓        -          -           -           ✓
+DEBOARDING_PAUSED    ✓        -          -           ✓           -
 
 Legend:
 ✓ = Valid transition
 - = Invalid/not applicable
 ```
 
-Note: Transitions to IDLE or FLIGHT_READY from any state represent resets (FMGS change or user reset).
+### Transition Triggers
+
+| Transition | Trigger |
+|------------|---------|
+| READY → BOARDING | User clicks "Start Boarding" + `can_start_boarding()` returns true |
+| READY → DEBOARDING | User clicks "Start Deboarding" + `can_start_deboarding()` returns true |
+| BOARDING → BOARDING_PAUSED | User clicks "Pause" |
+| BOARDING → READY | Pax count reaches target |
+| BOARDING_PAUSED → BOARDING | User clicks "Resume" |
+| BOARDING_PAUSED → READY | User clicks "Reset" |
+| DEBOARDING → DEBOARDING_PAUSED | User clicks "Pause" |
+| DEBOARDING → READY | Pax count reaches 0 |
+| DEBOARDING_PAUSED → DEBOARDING | User clicks "Resume" |
+| DEBOARDING_PAUSED → READY | User clicks "Reset" |
 
 ---
 
 ## Safe Reset Implementation
 
-### Gradual Passenger Adjustment
+### Reset from Paused State
 
-When resetting mid-operation, don't instantly set passengers to 0 (can cause physics issues):
+When user clicks "Reset" during a paused operation:
 
 ```lua
-local function safe_reset_passengers()
-    local current = tls_pax_no[0]
-    if current == 0 then return end
-
-    -- Option 1: Instant (current behavior, can cause issues)
-    -- tls_pax_no[0] = 0
-
-    -- Option 2: Gradual reduction (safer)
-    -- Schedule rapid deboarding at 0.1s per pax
-    local function reduce_one()
-        if tls_pax_no[0] > 0 then
-            tls_pax_no[0] = tls_pax_no[0] - 1
-            command_once("AirbusFBW/SetWeightAndCG")
-            Timers.schedule("safe_reset_pax", 0.1, reduce_one)
-        end
+local function handle_reset()
+    if current_state ~= State.BOARDING_PAUSED and
+       current_state ~= State.DEBOARDING_PAUSED then
+        return false, "Reset only available when paused"
     end
-    reduce_one()
 
-    -- Option 3: Just warn the user
-    -- "Cannot reset while passengers are aboard. Deboard first."
+    -- Close doors
+    close_doors()
+
+    -- Transition to READY
+    -- Note: Does NOT change passenger count - leaves aircraft as-is
+    transition_to(State.READY)
+
+    log_msg("Operation cancelled by user")
+    return true
 end
 ```
 
-### Full Clean Slate Reset
+### Optional: Full Clean Slate Reset
+
+For development/debugging, a full reset could clear SimBrief data too:
 
 ```lua
 local function clean_slate_reset()
-    -- Cancel all timers
     Timers.cancel_all()
-
-    -- If passengers aboard, handle gracefully
-    if tls_pax_no[0] > 0 then
-        log_msg("WARNING: Clean slate reset with passengers aboard")
-        -- Either: refuse, warn, or gradual reduction
-    end
-
-    -- Reset all state
-    current_state = State.IDLE
 
     -- Clear SimBrief data
     SIMBRIEF_LOADED = false
     SIMBRIEF_ERROR = nil
     pax_no_tgt = 0
-    units = nil
-    operator = nil
-    taxiFuel = nil
-    mzfw = nil
-    mtow = nil
 
-    -- Clear flight data
-    fmgs_flight_no = ""
-
-    -- Reset operational state
+    -- Reset state
+    current_state = State.READY
     pax_no_cur = 0
-    pax_no_deboarding = 0
 
-    -- Close doors
     close_doors()
-
     log_msg("Clean slate reset completed")
 end
 ```
+
+Note: This does NOT reset `AirbusFBW/NoPax` - that's the aircraft's truth. If user wants pax removed, they should deboard.
 
 ---
 
@@ -449,78 +417,92 @@ end
 The UI should reflect the current state clearly:
 
 ```lua
-local state_messages = {
-    [State.UNINITIALIZED] = "Initializing...",
-    [State.IDLE] = "Ready - Enter flight number in FMGS",
-    [State.FLIGHT_READY] = "Flight %s - Load SimBrief or set passengers",
-    [State.OFP_LOADED] = "OFP loaded - %d passengers",
-    [State.BOARDING] = "Boarding: %d / %d",
-    [State.BOARDING_PAUSED] = "Boarding PAUSED: %d / %d",
-    [State.BOARDING_COMPLETED] = "Boarding complete!",
-    [State.POST_BOARDING] = "Preparing for departure...",
-    [State.DEBOARDING] = "Deboarding: %d / %d",
-    [State.DEBOARDING_PAUSED] = "Deboarding PAUSED: %d / %d",
-    [State.DEBOARDING_COMPLETED] = "Deboarding complete!",
-}
-
 local function get_status_message()
-    local msg = state_messages[current_state] or "Unknown state"
-    -- Format with current values
-    return string.format(msg, fmgs_flight_no, pax_no_cur, pax_no_tgt)
+    if current_state == State.READY then
+        local pax = get("AirbusFBW/NoPax")
+        if pax > 0 then
+            return string.format("Ready - %d passengers aboard", pax)
+        elseif pax_no_tgt > 0 then
+            return string.format("Ready - Target: %d passengers", pax_no_tgt)
+        else
+            return "Ready - Set passenger target or fetch SimBrief"
+        end
+
+    elseif current_state == State.BOARDING then
+        return string.format("Boarding: %d / %d", pax_no_cur, pax_no_tgt)
+
+    elseif current_state == State.BOARDING_PAUSED then
+        return string.format("Boarding PAUSED: %d / %d", pax_no_cur, pax_no_tgt)
+
+    elseif current_state == State.DEBOARDING then
+        return string.format("Deboarding: %d remaining", get("AirbusFBW/NoPax"))
+
+    elseif current_state == State.DEBOARDING_PAUSED then
+        return string.format("Deboarding PAUSED: %d remaining", get("AirbusFBW/NoPax"))
+    end
+
+    return "Unknown state"
 end
 ```
+
+### Button Visibility
+
+| State | Buttons Shown |
+|-------|---------------|
+| READY | "Start Boarding" (if target set), "Start Deboarding" (if pax > 0), "Get from SimBrief" |
+| BOARDING | "Pause" |
+| BOARDING_PAUSED | "Resume", "Reset" |
+| DEBOARDING | "Pause" |
+| DEBOARDING_PAUSED | "Resume", "Reset" |
+
+Buttons should also be disabled (grayed) if `flight_in_progress()` returns true.
 
 ---
 
 ## Implementation Phases
 
 ### Phase 1: State Variable Consolidation
-- [ ] Create `current_state` enum variable
+- [ ] Create `current_state` variable with 5 states
 - [ ] Create `transition_to()` function with logging
-- [ ] Map existing boolean combinations to states
-- [ ] Add state validation (assert valid transitions)
+- [ ] Replace `boardingActive`, `boardingPaused`, `deboardingActive`, `deboardingPaused` with state checks
+- [ ] Remove `boardingCompleted`, `deboardingCompleted` - use transition to READY instead
 
 ### Phase 2: Timer System
 - [ ] Implement `Timers` module
-- [ ] Replace `fmgs_init_ts`, `boarding_completed_ts`, etc.
-- [ ] Ensure timers are cancelled on state transitions
-- [ ] Add timer status to debug output
+- [ ] Replace timestamp comparisons with timer callbacks
+- [ ] Ensure timers are cancelled when starting new operations
+- [ ] Remove magic `1E20` timestamp values
 
 ### Phase 3: Entry/Exit Actions
-- [ ] Implement `on_enter_state()` for all states
-- [ ] Implement `on_exit_state()` for cleanup
+- [ ] Implement `on_enter_state()` for READY, BOARDING, DEBOARDING
 - [ ] Move door open/close logic to state handlers
-- [ ] Move chime/speech logic to state handlers
+- [ ] Move chime/speech logic to READY entry (based on `from_state`)
 
-### Phase 4: Reset Handling
-- [ ] Implement soft reset (user button)
-- [ ] Implement hard reset (FMGS change)
-- [ ] Implement clean slate reset
-- [ ] Add confirmation for resets with passengers aboard
+### Phase 4: Pre-condition Checks
+- [ ] Implement `can_start_boarding()` with `flight_in_progress()` check
+- [ ] Implement `can_start_deboarding()` with pax count check
+- [ ] Surface errors to UI via `GROUND_OPS_ERROR`
 
-### Phase 5: Async Operations
-- [ ] Queue loadsheet delivery
-- [ ] Consider SimBrief fetch feedback (loading indicator)
-
-### Phase 6: UI Updates
-- [ ] Single status message based on state
-- [ ] Disable irrelevant buttons per state
-- [ ] Show timer countdowns (doors closing in Xs)
+### Phase 5: UI Updates
+- [ ] Single status message based on `get_status_message()`
+- [ ] Show/hide buttons per state
+- [ ] Gray out buttons when `flight_in_progress()`
 
 ---
 
 ## Testing Scenarios
 
-1. **Normal flow**: FMGS init → SimBrief → Board → Complete → Loadsheet
-2. **Manual pax**: FMGS init → Set pax manually → Board
-3. **Pause/resume**: Start boarding → Pause → Resume → Complete
-4. **FMGS reset during boarding**: Board halfway → Clear FMGS → Verify clean state
-5. **FMGS change during boarding**: Board halfway → Change flight → Verify reset
-6. **Deboard then board**: Deboard → Complete → Reset → Board new flight
-7. **Multiple SimBrief fetches**: Fetch → Fetch again → Verify latest data used
-8. **Aircraft mismatch**: Load wrong OFP → Verify error → Load correct OFP
-9. **Reset with passengers**: Board halfway → Reset → Verify graceful handling
+1. **Normal boarding flow**: Set target (SimBrief or manual) → Board → Complete → Doors close → Loadsheet
+2. **Manual pax target**: Set pax count manually → Board → Complete
+3. **Pause/resume boarding**: Start boarding → Pause → Resume → Complete
+4. **Pause/reset boarding**: Start boarding → Pause → Reset → Verify doors close, pax count preserved
+5. **Deboard external load**: Load situation with passengers → Deboard → Complete
+6. **Deboard then board**: Deboard → Complete → Fetch SimBrief → Board new flight
+7. **Multiple SimBrief fetches**: Fetch → Fetch again → Verify latest data overwrites
+8. **Aircraft mismatch**: Load OFP for wrong aircraft → Verify error shown → Load correct OFP
+9. **Flight in progress guard**: Start engines, set beacon → Verify boarding/deboarding blocked
 10. **Rapid state changes**: Click buttons quickly → Verify no invalid states
+11. **Partial boarding interrupted**: Board halfway → Reset → Deboard to empty → Board again
 
 ---
 
@@ -530,10 +512,11 @@ end
 local function debug_state()
     log_msg("=== TOBUS State Debug ===")
     log_msg("  current_state: " .. current_state)
-    log_msg("  fmgs_flight_no: " .. tostring(fmgs_flight_no))
-    log_msg("  SIMBRIEF_LOADED: " .. tostring(SIMBRIEF_LOADED))
-    log_msg("  pax_no_cur: " .. tostring(pax_no_cur))
     log_msg("  pax_no_tgt: " .. tostring(pax_no_tgt))
+    log_msg("  pax_no_cur (script): " .. tostring(pax_no_cur))
+    log_msg("  AirbusFBW/NoPax: " .. tostring(get("AirbusFBW/NoPax")))
+    log_msg("  flight_in_progress: " .. tostring(flight_in_progress()))
+    log_msg("  SIMBRIEF_LOADED: " .. tostring(SIMBRIEF_LOADED))
     log_msg("  Active timers:")
     for name, timer in pairs(Timers.active) do
         log_msg("    " .. name .. ": fires in " .. (timer.fire_at - os.time()) .. "s")
