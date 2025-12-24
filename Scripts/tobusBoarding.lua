@@ -6,6 +6,8 @@ local MY_PLANE_ICAO = PLANE_ICAO    -- may be stale now for A321 / A21N
 local VERSION = "3.2.2-hotbso"
 
  --http library import
+local xml2lua = require("xml2lua")
+local handler = require("xmlhandler.tree")
 local socket = require "socket"
 local http = require "socket.http"
 local LIP = require("LIP")
@@ -42,6 +44,8 @@ local pax_no_cur, pax_no_tgt, pax_no_deboarding,
 local s_per_pax_cfg = 4 -- seconds per pax in cfg
 local SIMBRIEF_LOADED = false
 local SETTINGS_FILENAME = "/tobus/tobus_settings.ini"
+local SIMBRIEF_FLIGHTPLAN_FILENAME = "simbrief.xml"
+local SIMBRIEF_ACCOUNT_NAME = ""
 local HOPPIE_LOGON = ""
 local HOPPIE_CPDLC = true
 local RANDOMIZE_SIMBRIEF_PASSENGER_NUMBER = false
@@ -490,6 +494,10 @@ local function readSettings()
     settings.doors = settings.doors or {}
     settings.speed = settings.speed or {}
 
+    if settings.simbrief.username ~= nil then
+        SIMBRIEF_ACCOUNT_NAME = settings.simbrief.username
+    end
+
     if settings.hoppie.logon ~= nil then
         HOPPIE_LOGON = settings.hoppie.logon
     end
@@ -523,6 +531,7 @@ local function saveSettings()
     log_msg("tobus: saveSettings...")
     local newSettings = {}
     newSettings.simbrief = {}
+    newSettings.simbrief.username = SIMBRIEF_ACCOUNT_NAME
     newSettings.simbrief.randomizePassengerNumber = RANDOMIZE_SIMBRIEF_PASSENGER_NUMBER
     newSettings.speed = {}
     newSettings.speed.secondsPerPax = s_per_pax_cfg
@@ -540,27 +549,44 @@ local function saveSettings()
 end
 
 local function fetchData()
-    if XPLMFindDataRef("sbh/seqno") == nil then
-      log_msg("simbrief_hub plugin is not loaded")
+    if SIMBRIEF_ACCOUNT_NAME == nil or SIMBRIEF_ACCOUNT_NAME == "" then
+      log_msg("No simbrief username has been configured")
       return false
     end
 
-    local seqno = get("sbh/seqno")
-    if seqno == 0 then
-      log_msg("simbrief data not loaded")
+    local response, statusCode = http.request("http://www.simbrief.com/api/xml.fetcher.php?username=" .. SIMBRIEF_ACCOUNT_NAME)
+
+    if statusCode ~= 200 then
+      log_msg("Simbrief API is not responding, status: " .. tostring(statusCode))
       return false
     end
 
-    log_msg("simbrief_hub seqno: " .. tostring(seqno))
+    local f = io.open(SCRIPT_DIRECTORY..SIMBRIEF_FLIGHTPLAN_FILENAME, "w")
+    f:write(response)
+    f:close()
 
-    pax_no_tgt = tonumber(get("sbh/pax_count"))
-    units = get("sbh/units")
-    operator = get("sbh/icao_airline")
-    taxiFuel = tonumber(get("sbh/fuel_taxi"))
-    mzfw = tonumber(get("sbh/max_zfw"))
-    mtow = tonumber(get("sbh/max_tow"))
+    log_msg("Simbrief XML data downloaded")
 
-    local max_pax = get("sbh/max_passengers")
+    -- Parse XML
+    local xfile = xml2lua.loadFile(SCRIPT_DIRECTORY..SIMBRIEF_FLIGHTPLAN_FILENAME)
+    local parser = xml2lua.parser(handler)
+    parser:parse(xfile)
+    local ofp = handler.root.OFP
+
+    if ofp.fetch.status ~= "Success" then
+      log_msg("SimBrief XML status is not success: " .. tostring(ofp.fetch.status))
+      return false
+    end
+
+    -- Extract the same data that was previously read from sbh/ datarefs
+    pax_no_tgt = tonumber(ofp.weights.pax_count)
+    units = ofp.params.units
+    operator = ofp.general.icao_airline
+    taxiFuel = tonumber(ofp.fuel.taxi)
+    mzfw = tonumber(ofp.weights.max_zfw)
+    mtow = tonumber(ofp.weights.max_tow)
+
+    local max_pax = ofp.aircraft.max_passengers
     log_msg(string.format("max_pax: '%s'", max_pax))
     MAX_PAX_NUMBER = tonumber(max_pax)
     if MY_PLANE_ICAO == "A319" and MAX_PAX_NUMBER == 160 then
@@ -574,10 +600,11 @@ local function fetchData()
 
     if RANDOMIZE_SIMBRIEF_PASSENGER_NUMBER then
         local f = clamp(gauss(1.0, 0.025), 0.96, 1.04)
-	    pax_no_tgt = math.floor(pax_no_tgt * f + 0.5)
+        pax_no_tgt = math.floor(pax_no_tgt * f + 0.5)
         if pax_no_tgt > MAX_PAX_NUMBER then pax_no_tgt = MAX_PAX_NUMBER end
         log_msg(string.format("randomized pax_no_tgt: %d", pax_no_tgt))
     end
+
     SIMBRIEF_LOADED = true
     return true
 end
@@ -647,6 +674,11 @@ function tobusOnBuild(tobus_window, x, y)
     else
         local changed, val
         if not (boardingActive or deboardingActive) then
+            if imgui.Button("Get from simbrief") then
+                fetchData()
+            end
+
+            imgui.SameLine()
             changed, val = imgui.SliderInt("Passengers number", pax_no_tgt, 0, MAX_PAX_NUMBER, "Value: %d")
 
             if changed then
@@ -769,6 +801,11 @@ function tobusOnBuild(tobus_window, x, y)
         end
 
         s_per_pax = s_per_pax_cfg
+
+        changed, newval = imgui.InputText("Simbrief Username", SIMBRIEF_ACCOUNT_NAME, 255)
+        if changed then
+            SIMBRIEF_ACCOUNT_NAME = newval
+        end
 
         changed, newval = imgui.InputText("Hoppie Logon", HOPPIE_LOGON, 255)
         if changed then
@@ -900,26 +937,23 @@ function tobus_often()
             SIMBRIEF_LOADED = false
             fmgs_init_ts = now
             prelim_loadsheet_sent = false
-            command_once("sbh/fetch")
         end
         return
     end
 
-    if not prelim_loadsheet_sent and now > fmgs_init_ts + 8 then
-        fetchData()
-        if SIMBRIEF_LOADED then
-            log_msg("Send prelim loadsheet")
-            generate_prelim_loadsheet()
-            prelim_loadsheet_sent = true
-            -- after the prelim load sheet a few no shows
-            if RANDOMIZE_SIMBRIEF_PASSENGER_NUMBER then
-                pax_no_tgt = math.random(pax_no_tgt - 3, pax_no_tgt)
-                if pax_no_tgt < 0 then
-                    pax_no_tgt = 0
-                end
-            end
-        end
-    end
+    -- TODO: fix logic bug in prelim loadsheet delivery
+    -- if not prelim_loadsheet_sent and SIMBRIEF_LOADED and now > fmgs_init_ts + 8 then
+    --     log_msg("Send prelim loadsheet")
+    --     generate_prelim_loadsheet()
+    --     prelim_loadsheet_sent = true
+    --     -- after the prelim load sheet a few no shows
+    --     if RANDOMIZE_SIMBRIEF_PASSENGER_NUMBER then
+    --         pax_no_tgt = math.random(pax_no_tgt - 3, pax_no_tgt)
+    --         if pax_no_tgt < 0 then
+    --             pax_no_tgt = 0
+    --         end
+    --     end
+    -- end
 
     -- delayed "boarding completed" processing
     if not doors_closed and now > boarding_completed_ts + 30 then
