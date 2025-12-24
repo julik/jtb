@@ -878,8 +878,7 @@ local function fetchData()
     log_msg(string.format("OFP aircraft: %s, loaded aircraft: %s", ofp_icao, MY_PLANE_ICAO))
 
     if ofp_icao ~= MY_PLANE_ICAO then
-      last_error = string.format("Aircraft mismatch: OFP is for %s, but %s is loaded", ofp_icao, MY_PLANE_ICAO)
-      log_msg("ERROR: " .. last_error)
+      set_last_error(string.format("Aircraft mismatch: OFP is for %s, but %s is loaded", ofp_icao, MY_PLANE_ICAO))
       return false
     end
 
