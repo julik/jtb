@@ -209,23 +209,29 @@ end
 
 | Timer Name | Delay | Triggered By | Action |
 |------------|-------|--------------|--------|
+| `prelim_loadsheet` | 8s | SimBrief fetch success | Send preliminary loadsheet via Hoppie |
 | `speak_completion` | 0.5s | Boarding/deboarding reaching target | `XPLMSpeakString()` |
 | `close_doors` | 30s | Boarding completion | Close passenger/cargo doors |
 | `final_loadsheet` | 60s | Boarding completion | Send final loadsheet via Hoppie |
 
-Note: Timers fire during READY state (after operation completes). They handle post-completion housekeeping.
+Note: The `prelim_loadsheet` timer fires before boarding (estimate for crew). All other timers fire during READY state after operations complete.
 
 ### Timer Cancellation Policy
 
 **Any user-initiated action cancels all pending timers.**
 
-Rationale: Timers represent "autopilot" behavior after an operation completes. If the user takes any action, they're taking manual control - cancel the autopilot.
+Rationale: Timers represent "autopilot" behavior. If the user takes any action, they're taking manual control - cancel the autopilot.
 
 Examples:
 - User completes boarding → timers scheduled for doors/loadsheet
 - User immediately starts deboarding → cancel all timers (don't close doors mid-deboard!)
 - User fetches new SimBrief data → cancel timers (starting fresh)
-- User manually adjusts pax count → cancel timers (manual override)
+- User manually adjusts pax slider → cancel `prelim_loadsheet` timer (manual override)
+
+**Prelim vs Final Loadsheet:**
+- `prelim_loadsheet` is scheduled after SimBrief fetch (8s delay)
+- If user adjusts pax count before it fires → cancel (data is stale)
+- When boarding completes and `final_loadsheet` is scheduled → cancel `prelim_loadsheet` (final supersedes prelim)
 
 The only things that should NOT cancel timers:
 - The timers firing themselves
@@ -265,6 +271,7 @@ local function on_enter_state(state, from_state)
         if from_state == State.BOARDING and pax_no_cur == pax_no_tgt then
             -- Boarding just completed
             playChimeSound(true)
+            Timers.cancel("prelim_loadsheet")  -- final supersedes prelim
             Timers.schedule("close_doors", 30, close_doors)
             Timers.schedule("final_loadsheet", 60, generate_final_loadsheet)
         elseif from_state == State.DEBOARDING and get("AirbusFBW/NoPax") == 0 then
