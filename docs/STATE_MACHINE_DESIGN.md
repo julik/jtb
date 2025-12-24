@@ -215,14 +215,29 @@ end
 
 Note: Timers fire during READY state (after operation completes). They handle post-completion housekeeping.
 
+### Timer Cancellation Policy
+
+**Any user-initiated action cancels all pending timers.**
+
+Rationale: Timers represent "autopilot" behavior after an operation completes. If the user takes any action, they're taking manual control - cancel the autopilot.
+
+Examples:
+- User completes boarding → timers scheduled for doors/loadsheet
+- User immediately starts deboarding → cancel all timers (don't close doors mid-deboard!)
+- User fetches new SimBrief data → cancel timers (starting fresh)
+- User manually adjusts pax count → cancel timers (manual override)
+
+The only things that should NOT cancel timers:
+- The timers firing themselves
+- Passive state queries (debug, UI refresh)
+
 ### Timer Cleanup on State Transition
 
 ```lua
 local function transition_to(new_state)
-    -- Cancel all timers when starting a new operation
-    if new_state == State.BOARDING or new_state == State.DEBOARDING then
-        Timers.cancel_all()
-    end
+    -- Cancel all timers on ANY state transition
+    -- User took action = cancel autopilot behavior
+    Timers.cancel_all()
 
     -- Run exit actions for old state
     on_exit_state(current_state)
