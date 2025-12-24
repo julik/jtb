@@ -9,7 +9,16 @@ local VERSION = "3.2.2-hotbso"
 local json = require("json")
 local socket = require "socket"
 local http = require "socket.http"
+local ltn12 = require "ltn12"
 local LIP = require("LIP")
+
+-- Create a socket with very short total timeout (500ms)
+-- This ensures HTTP requests never block the sim loop for long
+local function create_short_timeout_socket()
+    local sock = socket.tcp()
+    sock:settimeout(0.5, 't')  -- 500ms TOTAL timeout for entire request
+    return sock
+end
 
 local kg2lbs = 2.204622
 local wait_until_speak = 0
@@ -245,6 +254,107 @@ local function set_last_error(message)
     wait_until_speak = os.time() + 0.5
 end
 
+-------------------------------------------------------------------------------
+-- HTTP Helpers (with short timeouts and retries to avoid blocking sim loop)
+-------------------------------------------------------------------------------
+
+-- HTTP GET with retries (500ms timeout per attempt).
+-- Returns body, status_code on success, nil, error_msg on failure.
+local function http_get(url, max_attempts)
+    max_attempts = max_attempts or 3
+    local last_err = nil
+
+    for attempt = 1, max_attempts do
+        local body, code = http.request{
+            url = url,
+            create = create_short_timeout_socket,
+        }
+        if code == 200 then
+            return body, code
+        end
+        last_err = string.format("attempt %d: code=%s", attempt, tostring(code))
+        logMsg(string.format("tobus: HTTP GET %s - %s", url:sub(1, 50), last_err))
+    end
+
+    return nil, last_err
+end
+
+-- HTTP POST with retries (500ms timeout per attempt).
+-- Returns body, status_code on success, nil, error_msg on failure.
+local function http_post(url, payload, max_attempts)
+    max_attempts = max_attempts or 3
+    local last_err = nil
+
+    for attempt = 1, max_attempts do
+        local response_body = {}
+        local result, code = http.request{
+            url = url,
+            method = "POST",
+            headers = {
+                ["Content-Type"] = "application/x-www-form-urlencoded",
+                ["Content-Length"] = tostring(#payload),
+            },
+            source = ltn12.source.string(payload),
+            sink = ltn12.sink.table(response_body),
+            create = create_short_timeout_socket,
+        }
+
+        if code == 200 then
+            return table.concat(response_body), code
+        end
+
+        last_err = string.format("attempt %d: code=%s", attempt, tostring(code))
+        logMsg(string.format("tobus: HTTP POST %s - %s", url:sub(1, 50), last_err))
+    end
+
+    return nil, last_err
+end
+
+-- Pending Hoppie requests for scheduled retries
+local pending_hoppie_request = nil  -- {payload, attempts_remaining}
+
+-- Process pending Hoppie retry (called by timer)
+local function process_hoppie_retry()
+    if not pending_hoppie_request then return end
+
+    local req = pending_hoppie_request
+    local body, code = http_post("https://www.hoppie.nl/acars/system/connect.html", req.payload, 1)
+
+    if code == 200 then
+        logMsg(string.format("tobus: Hoppie retry OK: %s", tostring(body)))
+        pending_hoppie_request = nil
+        return
+    end
+
+    req.attempts = req.attempts - 1
+    if req.attempts > 0 then
+        logMsg(string.format("tobus: Hoppie retry failed, %d attempts left", req.attempts))
+        Timers.schedule("hoppie_retry", 0.5, process_hoppie_retry)
+    else
+        logMsg("tobus: Hoppie all retries exhausted")
+        set_last_error("Failed to send loadsheet to Hoppie after multiple attempts")
+        pending_hoppie_request = nil
+    end
+end
+
+-- Schedule a Hoppie POST with retries via Timer system (non-blocking after first attempt)
+local function hoppie_post_async(payload)
+    -- Try once immediately with short timeout
+    local body, code = http_post("https://www.hoppie.nl/acars/system/connect.html", payload, 1)
+
+    if code == 200 then
+        logMsg(string.format("tobus: Hoppie OK: %s", tostring(body)))
+        return true
+    end
+
+    -- First attempt failed - schedule retries via Timer
+    logMsg("tobus: Hoppie first attempt failed, scheduling retries")
+    pending_hoppie_request = {payload = payload, attempts = 4}  -- 4 more attempts
+    Timers.schedule("hoppie_retry", 0.5, process_hoppie_retry)
+
+    return false  -- first attempt failed, retries scheduled
+end
+
 -- Check if aircraft is in motion (unsafe for ground operations)
 -- Returns true if groundspeed or rotation rates indicate flight/taxi
 local function flight_in_progress()
@@ -343,17 +453,8 @@ local function send_loadsheet(ls_content)
 
     log_msg(payload:gsub("logon=[^&]+", "logon=***"))
 
-    local msg, code = http.request{
-            url = "https://www.hoppie.nl/acars/system/connect.html",
-            method = "POST",
-            headers = {
-                ["Content-Type"] = "application/x-www-form-urlencoded",
-                ["Content-Length"] = tostring(#payload),
-            },
-            source = ltn12.source.string(payload),
-        }
-
-    log_msg(string.format("Hoppie returns: '%s', code: %d", msg, code))
+    -- Use async Hoppie POST with automatic retries (non-blocking after first attempt)
+    hoppie_post_async(payload)
 end
 
 local function generate_final_loadsheet()
@@ -746,10 +847,11 @@ local function fetchData()
       return false
     end
 
-    local response, statusCode = http.request("http://www.simbrief.com/api/xml.fetcher.php?username=" .. SIMBRIEF_ACCOUNT_NAME .. "&json=1")
+    local url = "http://www.simbrief.com/api/xml.fetcher.php?username=" .. SIMBRIEF_ACCOUNT_NAME .. "&json=1"
+    local response, err = http_get(url, 3)  -- 3 attempts with short timeouts
 
-    if statusCode ~= 200 then
-      last_error = "SimBrief API error: " .. tostring(statusCode)
+    if not response then
+      last_error = "SimBrief API error: " .. tostring(err)
       log_msg(last_error)
       return false
     end
