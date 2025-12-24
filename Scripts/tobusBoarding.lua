@@ -679,58 +679,52 @@ function tobusOnBuild(tobus_window, x, y)
         imgui.PopStyleColor()
     end
 
-    if fmgs_flight_no == "" then
-        imgui.PushStyleColor(imgui.constant.Col.Text, 0xFFFF4488)
-        imgui.TextUnformatted("Simbrief data is only available after FMGS init!")
-        imgui.PopStyleColor()
-    else
-        local changed, val
-        if not (boardingActive or deboardingActive) then
-            if imgui.Button("Get from simbrief") then
-                fetchData()
-            end
+    local changed, val
+    if not (boardingActive or deboardingActive) then
+        if imgui.Button("Get from simbrief") then
+            fetchData()
+        end
 
+        imgui.SameLine()
+        changed, val = imgui.SliderInt("Passengers number", pax_no_tgt, 0, MAX_PAX_NUMBER, "Value: %d")
+
+        if changed then
+            pax_no_tgt = val
+        end
+
+        -- Display SimBrief error if any
+        if SIMBRIEF_ERROR ~= nil then
+            imgui.PushStyleColor(imgui.constant.Col.Text, 0xFF4444FF)  -- red
+            imgui.TextUnformatted(SIMBRIEF_ERROR)
+            imgui.PopStyleColor()
+        end
+    end
+
+    if not boardingActive and not deboardingActive then
+        if not deboardingPaused then
+            local instant = false
+
+            local start = imgui.Button("Start Boarding")
             imgui.SameLine()
-            changed, val = imgui.SliderInt("Passengers number", pax_no_tgt, 0, MAX_PAX_NUMBER, "Value: %d")
-
-            if changed then
-                pax_no_tgt = val
+            if imgui.Button("Instant Boarding") then
+                start = true
+                instant = true
             end
 
-            -- Display SimBrief error if any
-            if SIMBRIEF_ERROR ~= nil then
-                imgui.PushStyleColor(imgui.constant.Col.Text, 0xFF4444FF)  -- red
-                imgui.TextUnformatted(SIMBRIEF_ERROR)
-                imgui.PopStyleColor()
+            if start then
+                tobus_start_boarding_cmd()
+                if instant then
+                    boardInstantly()
+                else
+                    log_msg(string.format("start boarding with %0.1f s/pax", s_per_pax))
+                end
+
+                toggleTobusWindow()
+                return
             end
         end
 
-        if not boardingActive and not deboardingActive then
-            if not deboardingPaused then
-                local instant = false
-
-                local start = imgui.Button("Start Boarding")
-                imgui.SameLine()
-                if imgui.Button("Instant Boarding") then
-                    start = true
-                    instant = true
-                end
-
-                if start then
-                    tobus_start_boarding_cmd()
-                    if instant then
-                        boardInstantly()
-                    else
-                        log_msg(string.format("start boarding with %0.1f s/pax", s_per_pax))
-                    end
-
-                    toggleTobusWindow()
-                    return
-                end
-            end
-
-            imgui.SameLine()
-        end
+        imgui.SameLine()
     end
 
     if not boardingActive and not deboardingActive then
@@ -936,29 +930,30 @@ function tobus_often()
       speak_string = nil
     end
 
-    -- check if FMGS flight_no was changed
-    local fn  = tls_flight_no[0]
-    if fmgs_flight_no ~= fn then    -- change
-        if fn == "" then -- FMGS reset or fn cleared
-            log_msg("FMGS reset")
-            fmgs_flight_no = fn
-            SIMBRIEF_LOADED = false
-            fmgs_init_ts = 1E20
-            return
-        end
-
-        -- FMGS init
-        fmgs_flight_no = fn
-
-        -- if the beacon light is on it's likely a situation load
-        if fmgs_flight_no ~= "" and 0 == get("sim/cockpit/electrical/beacon_lights_on") then
-            log_msg("FMGS inited: " .. fmgs_flight_no)
-            SIMBRIEF_LOADED = false
-            fmgs_init_ts = now
-            prelim_loadsheet_sent = false
-        end
-        return
-    end
+    -- TODO: FMGS monitoring disabled - boarding no longer depends on FMGS init
+    -- -- check if FMGS flight_no was changed
+    -- local fn  = tls_flight_no[0]
+    -- if fmgs_flight_no ~= fn then    -- change
+    --     if fn == "" then -- FMGS reset or fn cleared
+    --         log_msg("FMGS reset")
+    --         fmgs_flight_no = fn
+    --         SIMBRIEF_LOADED = false
+    --         fmgs_init_ts = 1E20
+    --         return
+    --     end
+    --
+    --     -- FMGS init
+    --     fmgs_flight_no = fn
+    --
+    --     -- if the beacon light is on it's likely a situation load
+    --     if fmgs_flight_no ~= "" and 0 == get("sim/cockpit/electrical/beacon_lights_on") then
+    --         log_msg("FMGS inited: " .. fmgs_flight_no)
+    --         SIMBRIEF_LOADED = false
+    --         fmgs_init_ts = now
+    --         prelim_loadsheet_sent = false
+    --     end
+    --     return
+    -- end
 
     -- TODO: fix logic bug in prelim loadsheet delivery
     -- if not prelim_loadsheet_sent and SIMBRIEF_LOADED and now > fmgs_init_ts + 8 then
