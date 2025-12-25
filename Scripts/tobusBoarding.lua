@@ -669,12 +669,24 @@ local function on_enter_state(state, from_state)
         set("AirbusFBW/NoPax", 0)
         pax_no_cur = 0
         set("AirbusFBW/PaxDistrib", clamp(gauss(0.5, 0.1), 0.35, 0.6))
+        -- Calculate effective speed based on door configuration
+        if USE_SECOND_DOOR or jw1_connected then
+            s_per_pax = s_per_pax_cfg / 2
+        else
+            s_per_pax = s_per_pax_cfg
+        end
         nextTimeBoardingCheck = os.time()
 
     elseif state == State.DEBOARDING then
         open_doors()
         pax_no_deboarding = tls_pax_no[0]
         pax_no_cur = pax_no_deboarding
+        -- Calculate effective speed based on door configuration
+        if USE_SECOND_DOOR or jw1_connected then
+            s_per_pax = s_per_pax_cfg / 2
+        else
+            s_per_pax = s_per_pax_cfg
+        end
         nextTimeBoardingCheck = os.time()
 
     -- BOARDING_PAUSED and DEBOARDING_PAUSED have no entry actions
@@ -758,11 +770,9 @@ local function resetAllParameters()
     current_state = State.READY
     Timers.cancel_all()
     nextTimeBoardingCheck = os.time()
-    if USE_SECOND_DOOR then
-        s_per_pax = s_per_pax_cfg / 2
-    else
-        s_per_pax = s_per_pax_cfg
-    end
+    -- s_per_pax is calculated when entering BOARDING/DEBOARDING states
+    -- to account for both USE_SECOND_DOOR and jw1_connected at that moment
+    s_per_pax = s_per_pax_cfg
     jw1_connected = false
 end
 
@@ -1072,6 +1082,7 @@ function tobusOnBuild(tobus_window, x, y)
     if current_state == State.READY then
         jw1_connected = (opensam_door_status ~= nil and opensam_door_status[1] == 1)
 
+        local effective_s_per_pax = s_per_pax
         if USE_SECOND_DOOR or jw1_connected then
             imgui.PushStyleColor(imgui.constant.Col.Text, 0xFF00AAFF)
             if jw1_connected then
@@ -1079,12 +1090,11 @@ function tobusOnBuild(tobus_window, x, y)
             else
                 imgui.TextUnformatted("Using both doors")
             end
-
-            s_per_pax = s_per_pax / 2
+            effective_s_per_pax = s_per_pax / 2
             imgui.PopStyleColor()
         end
 
-        local minutes = math.floor((pax_no_tgt * s_per_pax) / 60 + 0.5)
+        local minutes = math.floor((pax_no_tgt * effective_s_per_pax) / 60 + 0.5)
         imgui.TextUnformatted(string.format("Expected Boarding time: %d min", minutes))
     end
 
@@ -1108,8 +1118,6 @@ function tobusOnBuild(tobus_window, x, y)
         if changed then
             s_per_pax_cfg = newval
         end
-
-        s_per_pax = s_per_pax_cfg
 
         changed, newval = imgui.InputText("Simbrief Username", SIMBRIEF_ACCOUNT_NAME, 255)
         if changed then
