@@ -1,0 +1,31 @@
+You can do this to set a timeout for one request instead of the entire HTTP module:
+
+local socket = require "socket"
+local http = require "socket.http"
+response = http.request{url=URL, create=function()
+  local req_sock = socket.tcp()
+  req_sock:settimeout(5)
+  return req_sock
+end}
+Note that the default behavior of :settimeout, as well as global settings like http.TIMEOUT, sets a time limit for any individual operation within the request - in other words, it's how long the operation may go without any activity before timing out. If you wish to set an overall upper bound on an operation - a time that the overall request can't exceed, regardless of activity - you should pass a mode argument of 't' as the second parameter to :settimeout, like so:
+
+local socket = require "socket"
+local http = require "socket.http"
+response = http.request{url=URL, create=function()
+  local req_sock = socket.tcp()
+  -- note the second parameter here
+  req_sock:settimeout(5, 't')
+  return req_sock
+end}
+As an example to illustrate the distinction between the two modes, imagine that, after making your request, the server responded with a chunk of the response once a second, taking seven seconds overall to complete. With req_sock:settimeout(5, 'b') (or just req_sock:settimeout(5)) setting a 5-second block timeout, this request would proceed just fine, as none of the underlying I/O operations took longer than five seconds: however, with req_sock:settimeout(5, 't') setting a five-second total timeout, the request would fail after five seconds.
+
+Of course, it may make sense to set restrictions for both of these durations, having both a short inactivity timeout as well as a longer overall timeout. As such, per the documentation, you can make two separate calls to specify both:
+
+local socket = require "socket"
+local http = require "socket.http"
+response = http.request{url=URL, create=function()
+  local req_sock = socket.tcp()
+  req_sock:settimeout(5, 'b')
+  req_sock:settimeout(30, 't')
+  return req_sock
+end}
