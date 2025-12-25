@@ -725,6 +725,10 @@ local function can_start_boarding()
     if pax_no_tgt <= 0 then
         return false, "Set passenger target first"
     end
+    local current_pax = get("AirbusFBW/NoPax")
+    if current_pax > 0 then
+        return false, "Deboard all passengers first"
+    end
     return true, nil
 end
 
@@ -762,6 +766,32 @@ local function deboardInstantly()
     -- Transition directly to READY with deboarding complete actions
     current_state = State.DEBOARDING  -- Set temporarily so on_enter_state knows we came from DEBOARDING
     transition_to(State.READY)
+end
+
+-- Instantly set pax to target (bypasses all rules, for setup/edge cases)
+-- This resets script state to READY - no chimes, no loadsheets, no timers
+local function setInstantly()
+    local current_pax = get("AirbusFBW/NoPax")
+    if current_pax == pax_no_tgt then
+        return  -- Nothing to do
+    end
+
+    -- Set pax count directly
+    set("AirbusFBW/NoPax", pax_no_tgt)
+    pax_no_cur = pax_no_tgt
+    set("AirbusFBW/PaxDistrib", clamp(gauss(0.5, 0.1), 0.35, 0.6))
+    command_once("AirbusFBW/SetWeightAndCG")
+
+    -- Reset to clean READY state (no state machine side effects)
+    current_state = State.READY
+    Timers.cancel_all()
+
+    -- Only close doors if we boarded to a target (not if we emptied/reduced)
+    if pax_no_tgt > 0 then
+        close_doors()
+    end
+
+    log_msg(string.format("Instant set: %d -> %d pax (state reset)", current_pax, pax_no_tgt))
 end
 
 local function resetAllParameters()
@@ -984,6 +1014,13 @@ function tobusOnBuild(tobus_window, x, y)
     local changed, val
     -- Show controls only when in READY state
     if current_state == State.READY then
+        -- Update jetway status first (affects speed calculation)
+        jw1_connected = (opensam_door_status ~= nil and opensam_door_status[1] == 1)
+
+        -- Show current pax count
+        local current_pax = get("AirbusFBW/NoPax")
+        imgui.TextUnformatted(string.format("Onboard: %d pax", current_pax))
+
         if http_in_progress("simbrief_ofp") then
             imgui.PushStyleColor(imgui.constant.Col.Button, 0xFF666666)
             imgui.Button("Fetching...")
@@ -994,55 +1031,70 @@ function tobusOnBuild(tobus_window, x, y)
         end
 
         imgui.SameLine()
-        changed, val = imgui.SliderInt("Passengers number", pax_no_tgt, 0, MAX_PAX_NUMBER, "Value: %d")
+        changed, val = imgui.SliderInt("Target", pax_no_tgt, 0, MAX_PAX_NUMBER, "%d pax")
 
         if changed then
             pax_no_tgt = val
             Timers.cancel_all()  -- User adjusted pax, cancel prelim loadsheet timer
         end
 
-        -- Start Boarding buttons
-        local instant = false
-        local start = imgui.Button("Start Boarding")
-        imgui.SameLine()
-        if imgui.Button("Instant Boarding") then
-            start = true
-            instant = true
+        -- Board button - only enabled when plane is empty and target > 0
+        local can_board = (current_pax == 0 and pax_no_tgt > 0)
+        if not can_board then
+            imgui.PushStyleColor(imgui.constant.Col.Button, 0xFF666666)
+            imgui.PushStyleColor(imgui.constant.Col.ButtonHovered, 0xFF666666)
+            imgui.PushStyleColor(imgui.constant.Col.ButtonActive, 0xFF666666)
         end
-
-        if start then
+        local board_label = string.format("Board to %d", pax_no_tgt)
+        if imgui.Button(board_label) and can_board then
             if tobus_start_boarding_cmd() then
-                if instant then
-                    boardInstantly()
-                else
-                    log_msg(string.format("start boarding with %0.1f s/pax", s_per_pax))
-                end
+                log_msg(string.format("start boarding with %0.1f s/pax", s_per_pax))
                 toggleTobusWindow()
                 return
             end
-            -- If we get here, boarding was blocked - error is in last_error
         end
-
-        imgui.SameLine()
-
-        -- Start Deboarding buttons
-        instant = false
-        start = imgui.Button("Start Deboarding")
-        imgui.SameLine()
-        if imgui.Button("Instant Deboarding") then
-            start = true
-            instant = true
-        end
-
-        if start then
-            if tobus_start_deboarding_cmd() then
-                if instant then
-                    deboardInstantly()
-                else
-                    log_msg(string.format("start deboarding with %0.1f s/pax", s_per_pax))
-                end
+        if not can_board then
+            imgui.PopStyleColor(3)
+            imgui.SameLine()
+            imgui.PushStyleColor(imgui.constant.Col.Text, 0xFF888888)
+            if current_pax > 0 then
+                imgui.TextUnformatted("(deboard first)")
+            elseif pax_no_tgt == 0 then
+                imgui.TextUnformatted("(set target)")
             end
-            -- If we get here, deboarding was blocked - error is in last_error
+            imgui.PopStyleColor()
+        end
+
+        -- Deboard All button - only enabled when passengers onboard
+        local can_deboard = (current_pax > 0)
+        if not can_deboard then
+            imgui.PushStyleColor(imgui.constant.Col.Button, 0xFF666666)
+            imgui.PushStyleColor(imgui.constant.Col.ButtonHovered, 0xFF666666)
+            imgui.PushStyleColor(imgui.constant.Col.ButtonActive, 0xFF666666)
+        end
+        if imgui.Button("Deboard All") and can_deboard then
+            if tobus_start_deboarding_cmd() then
+                log_msg(string.format("start deboarding with %0.1f s/pax", s_per_pax))
+            end
+        end
+        if not can_deboard then
+            imgui.PopStyleColor(3)
+        end
+
+        imgui.SameLine()
+
+        -- Instant button - always enabled unless current == target
+        local can_instant = (current_pax ~= pax_no_tgt)
+        if not can_instant then
+            imgui.PushStyleColor(imgui.constant.Col.Button, 0xFF666666)
+            imgui.PushStyleColor(imgui.constant.Col.ButtonHovered, 0xFF666666)
+            imgui.PushStyleColor(imgui.constant.Col.ButtonActive, 0xFF666666)
+        end
+        if imgui.Button("Instant board/deboard") and can_instant then
+            setInstantly()
+        end
+        if not can_instant then
+            imgui.PopStyleColor(3)
         end
     end
 
@@ -1080,8 +1132,6 @@ function tobusOnBuild(tobus_window, x, y)
     end
 
     if current_state == State.READY then
-        jw1_connected = (opensam_door_status ~= nil and opensam_door_status[1] == 1)
-
         local effective_s_per_pax = s_per_pax
         if USE_SECOND_DOOR or jw1_connected then
             imgui.PushStyleColor(imgui.constant.Col.Text, 0xFF00AAFF)
