@@ -23,8 +23,6 @@ local function create_short_timeout_socket()
 end
 
 local kg2lbs = 2.204622
-local wait_until_speak = 0
-local speak_string
 
 local tls_pax_no    -- dataref_table AirbusFBW/NoPax
 local tank_content_array -- dataref_table
@@ -129,6 +127,16 @@ function Timers.tick()
             timer.callback()
         end
     end
+end
+
+-- Schedule text-to-speech after a short delay.
+-- Note: if called multiple times in quick succession, later messages
+-- will overwrite earlier ones (timer uses same name). This is a tradeoff -
+-- implementing a proper speech queue would require estimating speech duration.
+local function say_later(message)
+    Timers.schedule("speak", 0.5, function()
+        XPLMSpeakString(message)
+    end)
 end
 
 local plane_db = {
@@ -259,8 +267,7 @@ end
 local function set_last_error(message)
     last_error = message
     log_msg("ERROR: " .. message)
-    speak_string = message
-    wait_until_speak = os.time() + 0.5
+    say_later(message)
 end
 
 -------------------------------------------------------------------------------
@@ -625,14 +632,12 @@ local function close_doors()
 end
 
 local function play_chime_sound(boarding)
-    command_once( "AirbusFBW/CheckCabin" )
+    command_once("AirbusFBW/CheckCabin")
     if boarding then
-        speak_string = "Boarding Completed"
+        say_later("Boarding Completed")
     else
-        speak_string = "Deboarding Completed"
+        say_later("Deboarding Completed")
     end
-
-    wait_until_speak = os.time() + 0.5
 end
 
 -------------------------------------------------------------------------------
@@ -1281,15 +1286,8 @@ function tobus_often()
 
     delayed_init()
 
-    -- Process timers
+    -- Process timers (including scheduled speech via say_later)
     Timers.tick()
-
-    -- Handle delayed speech
-    local now = os.time()
-    if speak_string and now > wait_until_speak then
-      XPLMSpeakString(speak_string)
-      speak_string = nil
-    end
 
     -- for debugging plane_data tables
     if false then
@@ -1361,8 +1359,7 @@ function tobus_start_boarding_cmd()
             if can then
                 transition_to(State.BOARDING)
                 log_msg("Boarding started (after OFP fetch)")
-                speak_string = "Plan loaded and boarding started"
-                wait_until_speak = os.time() + 0.5
+                say_later("Plan loaded and boarding started")
             else
                 set_last_error("Cannot start boarding: " .. reason)
             end
