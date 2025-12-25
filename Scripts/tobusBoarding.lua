@@ -1388,6 +1388,15 @@ function tobus_start_boarding_cmd()
         return false
     end
 
+    -- Reset pax to 0 (ToLiss may have set pax from SimBrief FPL INIT)
+    local current_pax = get("AirbusFBW/NoPax")
+    if current_pax > 0 then
+        set("AirbusFBW/NoPax", 0)
+        pax_no_cur = 0
+        command_once("AirbusFBW/SetWeightAndCG")
+        log_msg(string.format("Reset pax from %d to 0 for boarding", current_pax))
+    end
+
     log_msg("Fetching OFP from SimBrief...")
     fetch_data(function()
         local can, reason = can_start_boarding()
