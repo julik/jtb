@@ -931,7 +931,7 @@ local function process_simbrief_response(response)
     log_msg("SimBrief OFP loaded successfully")
 end
 
-local function fetch_data()
+local function fetch_data(on_success)
     last_error = nil  -- clear any previous error
     ofp_data = nil    -- clear previous OFP data (allows retry)
 
@@ -945,6 +945,10 @@ local function fetch_data()
     http_get("simbrief_ofp", url, function(body)
         if body then
             process_simbrief_response(body)
+            -- Call success callback if OFP was loaded successfully
+            if pax_no_tgt > 0 and on_success then
+                on_success()
+            end
         else
             set_last_error("SimBrief API error after multiple attempts")
         end
@@ -1342,7 +1346,31 @@ read_settings()
 
 function tobus_start_boarding_cmd()
     last_error = nil  -- clear previous error
+    delayed_init()  -- ensure plane_data etc. are initialized
 
+    -- If no OFP loaded, fetch it first then start boarding
+    if pax_no_tgt == 0 then
+        if http_in_progress("simbrief_ofp") then
+            set_last_error("SimBrief fetch already in progress")
+            return false
+        end
+        log_msg("No OFP loaded, fetching from SimBrief...")
+        fetch_data(function()
+            -- OFP loaded successfully, now start boarding
+            local can, reason = can_start_boarding()
+            if can then
+                transition_to(State.BOARDING)
+                log_msg("Boarding started (after OFP fetch)")
+                speak_string = "Plan loaded and boarding started"
+                wait_until_speak = os.time() + 0.5
+            else
+                set_last_error("Cannot start boarding: " .. reason)
+            end
+        end)
+        return true  -- Fetch initiated
+    end
+
+    -- OFP already loaded, start boarding directly
     local can, reason = can_start_boarding()
     if not can then
         set_last_error("Cannot start boarding: " .. reason)
@@ -1356,6 +1384,7 @@ end
 
 function tobus_start_deboarding_cmd()
     last_error = nil  -- clear previous error
+    delayed_init()  -- ensure plane_data etc. are initialized
 
     local can, reason = can_start_deboarding()
     if not can then
