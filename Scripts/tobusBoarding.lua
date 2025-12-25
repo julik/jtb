@@ -12,11 +12,13 @@ local http = require "socket.http"
 local ltn12 = require "ltn12"
 local LIP = require("LIP")
 
--- Create a socket with very short total timeout (500ms)
+local HTTP_TIMEOUT_SECONDS = 0.5  -- max time for any HTTP request (SimBrief, Hoppie)
+
+-- Create a socket with short total timeout
 -- This ensures HTTP requests never block the sim loop for long
 local function create_short_timeout_socket()
     local sock = socket.tcp()
-    sock:settimeout(0.5, 't')  -- 500ms TOTAL timeout for entire request
+    sock:settimeout(HTTP_TIMEOUT_SECONDS, 't')
     return sock
 end
 
@@ -256,7 +258,7 @@ end
 -- Set error, log it, and speak it aloud
 local function set_last_error(message)
     last_error = message
-    logMsg("tobus: ERROR: " .. message)
+    log_msg("ERROR: " .. message)
     speak_string = message
     wait_until_speak = os.time() + 0.5
 end
@@ -265,103 +267,73 @@ end
 -- HTTP Helpers (with short timeouts and retries to avoid blocking sim loop)
 -------------------------------------------------------------------------------
 
--- HTTP GET with retries (500ms timeout per attempt).
--- Returns body, status_code on success, nil, error_msg on failure.
-local function http_get(url, max_attempts)
-    max_attempts = max_attempts or 3
-    local last_err = nil
+local HTTP_MAX_ATTEMPTS = 3  -- max retry attempts for HTTP requests
 
-    for attempt = 1, max_attempts do
-        local response_body = {}
-        local result, code = http.request{
-            url = url,
-            sink = ltn12.sink.table(response_body),
-            create = create_short_timeout_socket,
-        }
-        if code == 200 then
-            return table.concat(response_body), code
-        end
-        last_err = string.format("attempt %d: code=%s", attempt, tostring(code))
-        logMsg(string.format("tobus: HTTP GET %s - %s", url:sub(1, 50), last_err))
-    end
+-- In-progress HTTP requests: {name -> {method, url, form_data, attempts_left, on_done}}
+local http_requests = {}
 
-    return nil, last_err
+-- Check if an HTTP request is in progress
+local function http_in_progress(name)
+    return http_requests[name] ~= nil
 end
 
--- HTTP POST with retries (500ms timeout per attempt).
--- Returns body, status_code on success, nil, error_msg on failure.
-local function http_post(url, payload, max_attempts)
-    max_attempts = max_attempts or 3
-    local last_err = nil
-
-    for attempt = 1, max_attempts do
-        local response_body = {}
-        local result, code = http.request{
-            url = url,
-            method = "POST",
-            headers = {
-                ["Content-Type"] = "application/x-www-form-urlencoded",
-                ["Content-Length"] = tostring(#payload),
-            },
-            source = ltn12.source.string(payload),
-            sink = ltn12.sink.table(response_body),
-            create = create_short_timeout_socket,
+-- Single HTTP attempt (short timeout). Returns body on success, nil on failure.
+local function http_try_once(method, url, form_data)
+    local response_body = {}
+    local request_params = {
+        url = url,
+        sink = ltn12.sink.table(response_body),
+        create = create_short_timeout_socket,
+    }
+    if method == "POST" then
+        request_params.method = "POST"
+        request_params.headers = {
+            ["Content-Type"] = "application/x-www-form-urlencoded",
+            ["Content-Length"] = tostring(#form_data),
         }
-
-        if code == 200 then
-            return table.concat(response_body), code
-        end
-
-        last_err = string.format("attempt %d: code=%s", attempt, tostring(code))
-        logMsg(string.format("tobus: HTTP POST %s - %s", url:sub(1, 50), last_err))
+        request_params.source = ltn12.source.string(form_data)
     end
 
-    return nil, last_err
-end
-
--- Pending Hoppie requests for scheduled retries
-local pending_hoppie_request = nil  -- {payload, attempts_remaining}
-
--- Process pending Hoppie retry (called by timer)
-local function process_hoppie_retry()
-    if not pending_hoppie_request then return end
-
-    local req = pending_hoppie_request
-    local body, code = http_post("https://www.hoppie.nl/acars/system/connect.html", req.payload, 1)
-
+    local result, code = http.request(request_params)
     if code == 200 then
-        logMsg(string.format("tobus: Hoppie retry OK: %s", tostring(body)))
-        pending_hoppie_request = nil
+        return table.concat(response_body)
+    end
+    log_msg(string.format("HTTP %s %s - code=%s", method, url:sub(1, 50), tostring(code)))
+    return nil
+end
+
+-- Try request, schedule retry on failure
+local function http_try(name)
+    local req = http_requests[name]
+    if not req then return end
+
+    local body = http_try_once(req.method, req.url, req.form_data)
+    if body then
+        http_requests[name] = nil
+        if req.on_done then req.on_done(body) end
         return
     end
 
-    req.attempts = req.attempts - 1
-    if req.attempts > 0 then
-        logMsg(string.format("tobus: Hoppie retry failed, %d attempts left", req.attempts))
-        Timers.schedule("hoppie_retry", 0.5, process_hoppie_retry)
+    req.attempts_left = req.attempts_left - 1
+    if req.attempts_left > 0 then
+        Timers.schedule("http_" .. name, 0.5, function() http_try(name) end)
     else
-        logMsg("tobus: Hoppie all retries exhausted")
-        set_last_error("Failed to send loadsheet to Hoppie after multiple attempts")
-        pending_hoppie_request = nil
+        log_msg(string.format("HTTP %s failed after retries: %s", req.method, name))
+        http_requests[name] = nil
+        if req.on_done then req.on_done(nil) end
     end
 end
 
--- Schedule a Hoppie POST with retries via Timer system (non-blocking after first attempt)
-local function hoppie_post_async(payload)
-    -- Try once immediately with short timeout
-    local body, code = http_post("https://www.hoppie.nl/acars/system/connect.html", payload, 1)
+-- HTTP GET with automatic retries. on_done(body) called with body or nil on failure.
+local function http_get(name, url, on_done)
+    http_requests[name] = {method = "GET", url = url, attempts_left = HTTP_MAX_ATTEMPTS, on_done = on_done}
+    http_try(name)
+end
 
-    if code == 200 then
-        logMsg(string.format("tobus: Hoppie OK: %s", tostring(body)))
-        return true
-    end
-
-    -- First attempt failed - schedule retries via Timer
-    logMsg("tobus: Hoppie first attempt failed, scheduling retries")
-    pending_hoppie_request = {payload = payload, attempts = 4}  -- 4 more attempts
-    Timers.schedule("hoppie_retry", 0.5, process_hoppie_retry)
-
-    return false  -- first attempt failed, retries scheduled
+-- HTTP POST with automatic retries. on_done(body) called with body or nil on failure.
+local function http_post(name, url, form_data, on_done)
+    http_requests[name] = {method = "POST", url = url, form_data = form_data, attempts_left = HTTP_MAX_ATTEMPTS, on_done = on_done}
+    http_try(name)
 end
 
 -- Check if aircraft is in motion (unsafe for ground operations)
@@ -449,16 +421,16 @@ local function send_loadsheet(ls_content)
 
     ls_content = ls_content:gsub("\n", "%%0A")
 
-    local payload
+    local form_data
     if HOPPIE_CPDLC then
-        payload = string.format("logon=%s&from=%s&to=%s&type=%s&packet=%s",
+        form_data = string.format("logon=%s&from=%s&to=%s&type=%s&packet=%s",
             HOPPIE_LOGON,
             ofp_data.operator .. "OPS",
             flight_no,
             'cpdlc',
             "/data2/313//NE/" .. ls_content)
     else
-        payload = string.format("logon=%s&from=%s&to=%s&type=%s&packet=%s",
+        form_data = string.format("logon=%s&from=%s&to=%s&type=%s&packet=%s",
             HOPPIE_LOGON,
             ofp_data.operator .. "OPS",
             flight_no,
@@ -466,10 +438,18 @@ local function send_loadsheet(ls_content)
             ls_content)
     end
 
-    log_msg(payload:gsub("logon=[^&]+", "logon=***"))
+    log_msg(form_data:gsub("logon=[^&]+", "logon=***"))
 
-    -- Use async Hoppie POST with automatic retries (non-blocking after first attempt)
-    hoppie_post_async(payload)
+    -- Send via Hoppie with automatic retries
+    http_post("hoppie_loadsheet", "https://www.hoppie.nl/acars/system/connect.html", form_data,
+        function(body)
+            if body then
+                log_msg("Hoppie response: " .. body)
+            else
+                set_last_error("Failed to send loadsheet to Hoppie")
+            end
+        end
+    )
 end
 
 local function generate_final_loadsheet()
@@ -852,23 +832,8 @@ local function saveSettings()
     log_msg("tobus: done")
 end
 
-local function fetchData()
-    last_error = nil  -- clear any previous error
-    ofp_data = nil    -- clear previous OFP data (allows retry)
-
-    if SIMBRIEF_ACCOUNT_NAME == nil or SIMBRIEF_ACCOUNT_NAME == "" then
-      set_last_error("No SimBrief username configured")
-      return false
-    end
-
-    local url = "http://www.simbrief.com/api/xml.fetcher.php?username=" .. SIMBRIEF_ACCOUNT_NAME .. "&json=1"
-    local response, err = http_get(url, 3)  -- 3 attempts with short timeouts
-
-    if not response then
-      set_last_error("SimBrief API error: " .. tostring(err))
-      return false
-    end
-
+-- Process SimBrief response (called on successful fetch)
+local function process_simbrief_response(response)
     local f = io.open(SCRIPT_DIRECTORY..SIMBRIEF_FLIGHTPLAN_FILENAME, "w")
     f:write(response)
     f:close()
@@ -880,7 +845,7 @@ local function fetchData()
 
     if ofp.fetch.status ~= "Success" then
       set_last_error("SimBrief fetch failed: " .. tostring(ofp.fetch.status))
-      return false
+      return
     end
 
     -- Validate aircraft type matches
@@ -889,7 +854,7 @@ local function fetchData()
 
     if ofp_icao ~= MY_PLANE_ICAO then
       set_last_error(string.format("Aircraft mismatch: OFP is for %s, but %s is loaded", ofp_icao, MY_PLANE_ICAO))
-      return false
+      return
     end
 
     -- Extract OFP data into table
@@ -924,7 +889,26 @@ local function fetchData()
     }
 
     log_msg("SimBrief OFP loaded successfully")
-    return true
+end
+
+local function fetchData()
+    last_error = nil  -- clear any previous error
+    ofp_data = nil    -- clear previous OFP data (allows retry)
+
+    if SIMBRIEF_ACCOUNT_NAME == nil or SIMBRIEF_ACCOUNT_NAME == "" then
+      set_last_error("No SimBrief username configured")
+      return
+    end
+
+    local url = "http://www.simbrief.com/api/xml.fetcher.php?username=" .. SIMBRIEF_ACCOUNT_NAME .. "&json=1"
+
+    http_get("simbrief_ofp", url, function(body)
+        if body then
+            process_simbrief_response(body)
+        else
+            set_last_error("SimBrief API error after multiple attempts")
+        end
+    end)
 end
 
 local function delayed_init()
@@ -990,7 +974,11 @@ function tobusOnBuild(tobus_window, x, y)
     local changed, val
     -- Show controls only when in READY state
     if current_state == State.READY then
-        if imgui.Button("Get from simbrief") then
+        if http_in_progress("simbrief_ofp") then
+            imgui.PushStyleColor(imgui.constant.Col.Button, 0xFF666666)
+            imgui.Button("Fetching...")
+            imgui.PopStyleColor()
+        elseif imgui.Button("Get from simbrief") then
             Timers.cancel_all()  -- User action cancels timers
             fetchData()
         end
