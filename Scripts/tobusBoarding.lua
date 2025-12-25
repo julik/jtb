@@ -624,7 +624,7 @@ local function close_doors()
     cargoDoorArray[1] = 0
 end
 
-local function playChimeSound(boarding)
+local function play_chime_sound(boarding)
     command_once( "AirbusFBW/CheckCabin" )
     if boarding then
         speak_string = "Boarding Completed"
@@ -651,13 +651,13 @@ local function on_enter_state(state, from_state)
         -- Check if we completed an operation
         if from_state == State.BOARDING and pax_no_cur == pax_no_tgt then
             -- Boarding just completed
-            playChimeSound(true)
+            play_chime_sound(true)
             Timers.cancel("prelim_loadsheet")  -- final supersedes prelim
             Timers.schedule("close_doors", 30, close_doors)
             Timers.schedule("final_loadsheet", 60, generate_final_loadsheet)
         elseif from_state == State.DEBOARDING and get("AirbusFBW/NoPax") == 0 then
             -- Deboarding just completed
-            playChimeSound(false)
+            play_chime_sound(false)
             close_doors()
         elseif from_state == State.BOARDING_PAUSED or from_state == State.DEBOARDING_PAUSED then
             -- User clicked Reset - close doors, no chime
@@ -747,7 +747,7 @@ local function can_start_deboarding()
     return true, nil
 end
 
-local function boardInstantly()
+local function board_instantly()
     open_doors()
     set("AirbusFBW/NoPax", pax_no_tgt)
     pax_no_cur = pax_no_tgt
@@ -758,7 +758,7 @@ local function boardInstantly()
     transition_to(State.READY)
 end
 
-local function deboardInstantly()
+local function deboard_instantly()
     open_doors()
     tls_pax_no[0] = 0
     pax_no_cur = 0
@@ -770,7 +770,7 @@ end
 
 -- Instantly set pax to target (bypasses all rules, for setup/edge cases)
 -- This resets script state to READY - no chimes, no loadsheets, no timers
-local function setInstantly()
+local function set_instantly()
     local current_pax = get("AirbusFBW/NoPax")
     if current_pax == pax_no_tgt then
         return  -- Nothing to do
@@ -794,7 +794,7 @@ local function setInstantly()
     log_msg(string.format("Instant set: %d -> %d pax (state reset)", current_pax, pax_no_tgt))
 end
 
-local function resetAllParameters()
+local function reset_all_parameters()
     pax_no_cur = 0
     pax_no_tgt = 0
     current_state = State.READY
@@ -806,7 +806,7 @@ local function resetAllParameters()
     jw1_connected = false
 end
 
-local function readSettings()
+local function read_settings()
     local f = io.open(SCRIPT_DIRECTORY..SETTINGS_FILENAME)
     if f == nil then return end
 
@@ -851,8 +851,8 @@ local function readSettings()
     end
 end
 
-local function saveSettings()
-    log_msg("tobus: saveSettings...")
+local function save_settings()
+    log_msg("tobus: save_settings...")
     local newSettings = {}
     newSettings.simbrief = {}
     newSettings.simbrief.username = SIMBRIEF_ACCOUNT_NAME
@@ -931,7 +931,7 @@ local function process_simbrief_response(response)
     log_msg("SimBrief OFP loaded successfully")
 end
 
-local function fetchData()
+local function fetch_data()
     last_error = nil  -- clear any previous error
     ofp_data = nil    -- clear previous OFP data (allows retry)
 
@@ -981,10 +981,10 @@ local function delayed_init()
 
     log_msg(string.format("tobus: plane: '%s', MAX_PAX_NUMBER: %d", MY_PLANE_ICAO, MAX_PAX_NUMBER))
 
-    resetAllParameters()
+    reset_all_parameters()
 end
 
-function tobusOnBuild(tobus_window, x, y)
+function tobus_on_build(tobus_window, x, y)
     -- Display error prominently at top if any
     if last_error ~= nil then
         imgui.PushStyleColor(imgui.constant.Col.Text, 0xFF4444FF)  -- red
@@ -1027,7 +1027,7 @@ function tobusOnBuild(tobus_window, x, y)
             imgui.PopStyleColor()
         elseif imgui.Button("Get from simbrief") then
             Timers.cancel_all()  -- User action cancels timers
-            fetchData()
+            fetch_data()
         end
 
         imgui.SameLine()
@@ -1049,7 +1049,7 @@ function tobusOnBuild(tobus_window, x, y)
         if imgui.Button(board_label) and can_board then
             if tobus_start_boarding_cmd() then
                 log_msg(string.format("start boarding with %0.1f s/pax", s_per_pax))
-                toggleTobusWindow()
+                toggle_tobus_window()
                 return
             end
         end
@@ -1091,7 +1091,7 @@ function tobusOnBuild(tobus_window, x, y)
             imgui.PushStyleColor(imgui.constant.Col.ButtonActive, 0xFF666666)
         end
         if imgui.Button("Instant board/deboard") and can_instant then
-            setInstantly()
+            set_instantly()
         end
         if not can_instant then
             imgui.PopStyleColor(3)
@@ -1227,7 +1227,7 @@ function tobusOnBuild(tobus_window, x, y)
         end
 
         if imgui.Button("Save Settings") then
-            saveSettings()
+            save_settings()
         end
         imgui.TreePop()
     end
@@ -1235,12 +1235,12 @@ end
 
 local winCloseInProgess = false
 
-function tobusOnClose()
+function tobus_on_close()
     isTobusWindowDisplayed = false
     winCloseInProgess = false
 end
 
-function buildTobusWindow()
+function build_tobus_window()
     delayed_init()
 
     if (isTobusWindowDisplayed) then
@@ -1252,13 +1252,13 @@ function buildTobusWindow()
 
     float_wnd_set_position(tobus_window, width / 2 - 375, height / 2)
 	float_wnd_set_title(tobus_window, "TOBUS - Your Toliss Boarding Companion " .. VERSION)
-	float_wnd_set_imgui_builder(tobus_window, "tobusOnBuild")
-    float_wnd_set_onclose(tobus_window, "tobusOnClose")
+	float_wnd_set_imgui_builder(tobus_window, "tobus_on_build")
+    float_wnd_set_onclose(tobus_window, "tobus_on_close")
 
     isTobusWindowDisplayed = true
 end
 
-function toggleTobusWindow()
+function toggle_tobus_window()
     if isTobusWindowDisplayed then
         if not winCloseInProgess then
             winCloseInProgess = true
@@ -1267,7 +1267,7 @@ function toggleTobusWindow()
         return
     end
 
-    buildTobusWindow()
+    build_tobus_window()
 end
 
 -- low freq actions
@@ -1338,7 +1338,7 @@ if not SUPPORTS_FLOATING_WINDOWS then
     return
 end
 
-readSettings()
+read_settings()
 
 function tobus_start_boarding_cmd()
     last_error = nil  -- clear previous error
@@ -1368,8 +1368,8 @@ function tobus_start_deboarding_cmd()
     return true
 end
 
-add_macro("TOBUS - Your Toliss Boarding Companion", "buildTobusWindow()")
-create_command("FlyWithLua/TOBUS/Toggle_tobus", "Toggle TOBUS window", "toggleTobusWindow()", "", "")
+add_macro("TOBUS - Your Toliss Boarding Companion", "build_tobus_window()")
+create_command("FlyWithLua/TOBUS/Toggle_tobus", "Toggle TOBUS window", "toggle_tobus_window()", "", "")
 
 add_macro("TOBUS - Start Boarding", "tobus_start_boarding_cmd()")
 create_command("FlyWithLua/TOBUS/start_boarding", "Start Boarding", "tobus_start_boarding_cmd()", "", "")
