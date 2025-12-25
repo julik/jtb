@@ -280,6 +280,18 @@ end
 -- HTTP Helpers (with short timeouts and retries to avoid blocking sim loop)
 -------------------------------------------------------------------------------
 
+-- URL-encode a string for use in form data
+local function url_encode(str)
+    if str then
+        str = string.gsub(str, "\n", "\r\n")
+        str = string.gsub(str, "([^%w _%%%-%.~])", function(c)
+            return string.format("%%%02X", string.byte(c))
+        end)
+        str = string.gsub(str, " ", "+")
+    end
+    return str
+end
+
 local HTTP_MAX_ATTEMPTS = 3  -- max retry attempts for HTTP requests
 
 -- In-progress HTTP requests: {name -> {method, url, form_data, attempts_left, on_done}}
@@ -449,34 +461,35 @@ local function send_loadsheet(ls_content)
         return
     end
 
-    ls_content = ls_content:gsub("\n", "%%0A")
-
     local form_data
     if HOPPIE_CPDLC then
         form_data = string.format("logon=%s&from=%s&to=%s&type=%s&packet=%s",
-            HOPPIE_LOGON,
-            ofp_data.operator .. "OPS",
-            flight_no,
+            url_encode(HOPPIE_LOGON),
+            url_encode(ofp_data.operator .. "OPS"),
+            url_encode(flight_no),
             'cpdlc',
-            "/data2/313//NE/" .. ls_content)
+            url_encode("/data2/313//NE/" .. ls_content))
     else
         form_data = string.format("logon=%s&from=%s&to=%s&type=%s&packet=%s",
-            HOPPIE_LOGON,
-            ofp_data.operator .. "OPS",
-            flight_no,
+            url_encode(HOPPIE_LOGON),
+            url_encode(ofp_data.operator .. "OPS"),
+            url_encode(flight_no),
             'telex',
-            ls_content)
+            url_encode(ls_content))
     end
 
     log_msg(form_data:gsub("logon=[^&]+", "logon=***"))
 
     -- Send via Hoppie with automatic retries
+    -- Note: Hoppie returns 200 for both success ("ok") and errors ("error {msg}")
     http_post("hoppie_loadsheet", "https://www.hoppie.nl/acars/system/connect.html", form_data,
         function(body)
-            if body then
-                log_msg("Hoppie response: " .. body)
+            if body and body:match("^ok") then
+                log_msg("Hoppie accepted loadsheet")
+            elseif body then
+                set_last_error("Hoppie rejected loadsheet: " .. body)
             else
-                set_last_error("Failed to send loadsheet to Hoppie")
+                set_last_error("Failed to send loadsheet to Hoppie (network error)")
             end
         end
     )
@@ -1369,36 +1382,23 @@ function tobus_start_boarding_cmd()
     last_error = nil  -- clear previous error
     delayed_init()  -- ensure plane_data etc. are initialized
 
-    -- If no OFP loaded, fetch it first then start boarding
-    if pax_no_tgt == 0 then
-        if http_in_progress("simbrief_ofp") then
-            set_last_error("SimBrief fetch already in progress")
-            return false
-        end
-        log_msg("No OFP loaded, fetching from SimBrief...")
-        fetch_data(function()
-            -- OFP loaded successfully, now start boarding
-            local can, reason = can_start_boarding()
-            if can then
-                transition_to(State.BOARDING)
-                log_msg("Boarding started (after OFP fetch)")
-                say_later("Plan loaded and boarding started")
-            else
-                set_last_error("Cannot start boarding: " .. reason)
-            end
-        end)
-        return true  -- Fetch initiated
-    end
-
-    -- OFP already loaded, start boarding directly
-    local can, reason = can_start_boarding()
-    if not can then
-        set_last_error("Cannot start boarding: " .. reason)
+    -- Always fetch OFP to support turnarounds (OFP may have changed on server)
+    if http_in_progress("simbrief_ofp") then
+        set_last_error("SimBrief fetch already in progress")
         return false
     end
 
-    transition_to(State.BOARDING)
-    log_msg("Boarding started")
+    log_msg("Fetching OFP from SimBrief...")
+    fetch_data(function()
+        local can, reason = can_start_boarding()
+        if can then
+            transition_to(State.BOARDING)
+            log_msg("Boarding started (after OFP fetch)")
+            say_later("Plan loaded and boarding started")
+        else
+            set_last_error("Cannot start boarding: " .. reason)
+        end
+    end)
     return true
 end
 
