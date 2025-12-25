@@ -107,6 +107,8 @@ function Timers.cancel(name)
     end
 end
 
+Timers.on_cancel_all = nil  -- hook for HTTP cleanup
+
 function Timers.cancel_all()
     local count = 0
     for name, _ in pairs(Timers.active) do
@@ -115,6 +117,10 @@ function Timers.cancel_all()
     if count > 0 then
         log_msg(string.format("Cancelling %d timer(s)", count))
         Timers.active = {}
+    end
+    -- Call hook if set (used by HTTP layer to clean up orphaned requests)
+    if Timers.on_cancel_all then
+        Timers.on_cancel_all()
     end
 end
 
@@ -283,6 +289,23 @@ local http_requests = {}
 local function http_in_progress(name)
     return http_requests[name] ~= nil
 end
+
+-- Cancel all pending HTTP requests (clears state so http_in_progress returns false)
+-- Called by Timers.cancel_all() to prevent orphaned requests when retry timers are cancelled
+local function http_cancel_all()
+    local count = 0
+    for name, _ in pairs(http_requests) do
+        Timers.cancel("http_" .. name)  -- Cancel any pending retry timer
+        count = count + 1
+    end
+    if count > 0 then
+        log_msg(string.format("Cancelled %d HTTP request(s)", count))
+        http_requests = {}
+    end
+end
+
+-- Register HTTP cleanup hook with Timers
+Timers.on_cancel_all = http_cancel_all
 
 -- Single HTTP attempt (short timeout). Returns body on success, nil on failure.
 local function http_try_once(method, url, form_data)
@@ -1044,7 +1067,7 @@ function tobus_on_build(tobus_window, x, y)
 
         if changed then
             pax_no_tgt = val
-            Timers.cancel_all()  -- User adjusted pax, cancel prelim loadsheet timer
+            Timers.cancel("prelim_loadsheet")  -- Don't cancel close_doors/final_loadsheet
         end
 
         -- Board button - only enabled when plane is empty and target > 0
