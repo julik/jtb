@@ -1385,7 +1385,16 @@ function tobus_start_boarding_cmd()
     last_error = nil  -- clear previous error
     delayed_init()  -- ensure plane_data etc. are initialized
 
-    -- Always fetch OFP to support turnarounds (OFP may have changed on server)
+    -- Safety checks before fetching OFP
+    if current_state ~= State.READY then
+        set_last_error("Cannot start boarding: Operation already in progress")
+        return false
+    end
+    local in_flight, reason = flight_in_progress()
+    if in_flight then
+        set_last_error("Cannot start boarding: " .. reason)
+        return false
+    end
     if http_in_progress("simbrief_ofp") then
         set_last_error("SimBrief fetch already in progress")
         return false
@@ -1402,14 +1411,14 @@ function tobus_start_boarding_cmd()
 
     log_msg("Fetching OFP from SimBrief...")
     fetch_data(function()
-        local can, reason = can_start_boarding()
-        if can then
-            transition_to(State.BOARDING)
-            log_msg("Boarding started (after OFP fetch)")
-            say_later("Plan loaded and boarding started")
-        else
-            set_last_error("Cannot start boarding: " .. reason)
+        -- Re-check after fetch (pax_no_tgt now set)
+        if pax_no_tgt <= 0 then
+            set_last_error("Cannot start boarding: No passengers in OFP")
+            return
         end
+        transition_to(State.BOARDING)
+        log_msg("Boarding started (after OFP fetch)")
+        say_later("Plan loaded and boarding started")
     end)
     return true
 end
