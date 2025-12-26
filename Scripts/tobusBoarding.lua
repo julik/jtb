@@ -781,6 +781,9 @@ local function can_start_deboarding()
     if in_flight then
         return false, reason
     end
+    if get("AirbusFBW/SeatBeltSignsOn") == 1 then
+        return false, "Turn off the seatbelt sign first"
+    end
     local current_pax = get("AirbusFBW/NoPax")
     if current_pax <= 0 then
         return false, "No passengers to deboard"
