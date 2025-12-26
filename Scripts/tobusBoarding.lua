@@ -384,7 +384,7 @@ local function flight_in_progress()
     -- Groundspeed in m/s (0.5 m/s ≈ 1 knot)
     local groundspeed = get("sim/flightmodel/position/groundspeed")
     if groundspeed > 0.5 then
-        return true, string.format("Aircraft moving (%.1f m/s)", groundspeed)
+        return true, "Aircraft is in motion"
     end
 
     -- Rotation rates in degrees/second
@@ -393,7 +393,7 @@ local function flight_in_progress()
     local R = math.abs(get("sim/flightmodel/position/R"))  -- yaw rate
 
     if P > 1.0 or Q > 1.0 or R > 1.0 then
-        return true, string.format("Aircraft rotating (P=%.1f Q=%.1f R=%.1f deg/s)", P, Q, R)
+        return true, "Aircraft is in motion"
     end
 
     -- Beacon on = ground crew should not approach
