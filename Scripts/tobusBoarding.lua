@@ -791,51 +791,44 @@ local function can_start_deboarding()
     return true, nil
 end
 
-local function board_instantly()
-    open_doors()
-    set("AirbusFBW/NoPax", pax_no_tgt)
-    pax_no_cur = pax_no_tgt
-    set("AirbusFBW/PaxDistrib", clamp(gauss(0.5, 0.1), 0.35, 0.6))
-    command_once("AirbusFBW/SetWeightAndCG")
-    -- Transition directly to READY with boarding complete actions
-    current_state = State.BOARDING  -- Set temporarily so on_enter_state knows we came from BOARDING
-    transition_to(State.READY)
+-- Reset state machine to READY and cancel all pending operations
+local function reset_all_state()
+    current_state = State.READY
+    Timers.cancel_all()  -- Also cancels HTTP via hook
 end
 
-local function deboard_instantly()
-    open_doors()
-    tls_pax_no[0] = 0
-    pax_no_cur = 0
-    command_once("AirbusFBW/SetWeightAndCG")
-    -- Transition directly to READY with deboarding complete actions
-    current_state = State.DEBOARDING  -- Set temporarily so on_enter_state knows we came from DEBOARDING
-    transition_to(State.READY)
-end
-
--- Instantly set pax to target (bypasses all rules, for setup/edge cases)
--- This resets script state to READY - no chimes, no loadsheets, no timers
-local function set_instantly()
+-- Set pax count instantly and reset state (no doors, no chimes)
+-- Sends final loadsheet if target > 0 and OFP is available
+local function set_pax_now(target)
     local current_pax = get("AirbusFBW/NoPax")
-    if current_pax == pax_no_tgt then
+    if current_pax == target then
         return  -- Nothing to do
     end
 
-    -- Set pax count directly
-    set("AirbusFBW/NoPax", pax_no_tgt)
-    pax_no_cur = pax_no_tgt
-    set("AirbusFBW/PaxDistrib", clamp(gauss(0.5, 0.1), 0.35, 0.6))
-    command_once("AirbusFBW/SetWeightAndCG")
-
-    -- Reset to clean READY state (no state machine side effects)
-    current_state = State.READY
-    Timers.cancel_all()
-
-    -- Only close doors if we boarded to a target (not if we emptied/reduced)
-    if pax_no_tgt > 0 then
-        close_doors()
+    set("AirbusFBW/NoPax", target)
+    pax_no_cur = target
+    if target > 0 then
+        set("AirbusFBW/PaxDistrib", clamp(gauss(0.5, 0.1), 0.35, 0.6))
     end
+    command_once("AirbusFBW/SetWeightAndCG")
+    reset_all_state()
 
-    log_msg(string.format("Instant set: %d -> %d pax (state reset)", current_pax, pax_no_tgt))
+    log_msg(string.format("Instant set: %d -> %d pax", current_pax, target))
+
+    -- Send final loadsheet if we boarded passengers
+    if target > 0 then
+        generate_final_loadsheet()
+    end
+end
+
+local function board_instantly()
+    set_pax_now(pax_no_tgt)
+    close_doors()
+end
+
+local function deboard_instantly()
+    set_pax_now(0)
+    open_doors()
 end
 
 local function reset_all_parameters()
@@ -1131,17 +1124,33 @@ function tobus_on_build(tobus_window, x, y)
 
         imgui.SameLine()
 
-        -- Instant button - always enabled unless current == target
-        local can_instant = (current_pax ~= pax_no_tgt)
-        if not can_instant then
+        -- Instant Board button - enabled if target > current
+        local can_instant_board = (pax_no_tgt > 0 and current_pax < pax_no_tgt)
+        if not can_instant_board then
             imgui.PushStyleColor(imgui.constant.Col.Button, 0xFF666666)
             imgui.PushStyleColor(imgui.constant.Col.ButtonHovered, 0xFF666666)
             imgui.PushStyleColor(imgui.constant.Col.ButtonActive, 0xFF666666)
         end
-        if imgui.Button("Instant board/deboard") and can_instant then
-            set_instantly()
+        if imgui.Button("Instant Board") and can_instant_board then
+            board_instantly()
         end
-        if not can_instant then
+        if not can_instant_board then
+            imgui.PopStyleColor(3)
+        end
+
+        imgui.SameLine()
+
+        -- Instant Deboard button - enabled if current pax > 0
+        local can_instant_deboard = (current_pax > 0)
+        if not can_instant_deboard then
+            imgui.PushStyleColor(imgui.constant.Col.Button, 0xFF666666)
+            imgui.PushStyleColor(imgui.constant.Col.ButtonHovered, 0xFF666666)
+            imgui.PushStyleColor(imgui.constant.Col.ButtonActive, 0xFF666666)
+        end
+        if imgui.Button("Instant Deboard") and can_instant_deboard then
+            deboard_instantly()
+        end
+        if not can_instant_deboard then
             imgui.PopStyleColor(3)
         end
     end
