@@ -1,63 +1,71 @@
-# TOBUS mod
-**This is a mod of TOBUS by @piotr-tomczyk who is unreachable and seems to have other prorities now. I took the liberty to add some functionality and keep this tool alive.**
+# JTB - Julik's ToLiss Boarding
 
-Credits:
+A FlyWithLua script that simulates realistic passenger boarding and deboarding for ToLiss aircraft in X-Plane.
 
-- Script creation by @piotr-tomczyk
-- Initial loadsheet by @Tom_David
-- Manta32 for cpdlc code released with MIT license, see copyright notice below
+## Origins and Credits
 
-```
-ToLoadHUB
-Author: Manta32
-Special thanks to: Giulio Cataldo for the night spent suffering with me
-Initial project by: @piotr-tomczyk aka @travisair
-Thanks to: @hotbso for the idea
-Extra thanks to: @Qlaudie73 for the new features, and @Pilot4XP for the valuable information
-License: MIT License
-```
+This project is based on work by several contributors:
 
---------------------------------------------------------------------------------------------------------------------------------
+- **Original TOBUS** by [@piotr-tomczyk](https://github.com/piotr-tomczyk) (aka @travisair) - the original boarding simulation concept
+- **hotbso's TOBUS fork** at [hotbso/TOBUS](https://github.com/hotbso/TOBUS) - maintenance and improvements
+- **@Tom_David** - initial loadsheet implementation
+- **Manta32** - CPDLC code (MIT license)
+- **@Qlaudie73** and **@Pilot4XP** - additional features and information
 
+Special thanks to hotbso for keeping the project alive and adding functionality when the original author became unreachable.
 
-## DESCRIPTION
-This script simulates the boarding process for your ToLiss fleet. It pulls data from simbrief,
-simulates timing of passenger boarding applying some variation (late booking, no-show) and send a final loadsheet (see some caveats below).
+## Changes from hotbso's Version
 
-It adds an tab to FlightWithLua Macros tab, that when opened presents you with an window that lets you:
+JTB includes significant refactoring and improvements:
 
-- Select a passenger number that you want to board/deboard.
-	- Select that number randomly (it's not just 0 - 100 random generator, I put some scaling into this random values in order for them to reflect passenger numbers much better).
-	- Import your passenger number from current simbrief flightplan!!!
-	- Choose speed of the boarding (Real, Fast and Instant).
+- **State machine architecture** - clean state transitions replace scattered boolean flags
+- **Timer system** - centralized timer management with proper cleanup
+- **HTTP improvements** - short timeouts with automatic retries to avoid blocking the sim
+- **Turnaround support** - always re-fetches OFP when starting boarding for multi-leg flights
+- **Safety checks** - prevents boarding/deboarding when beacon is on, aircraft is moving, or (for deboarding) seatbelt sign is on
+- **Improved UI** - separate Instant Board/Instant Deboard buttons, clearer status messages
+- **Text-to-speech feedback** - errors and status changes are spoken aloud
+- **URL encoding fix** - proper encoding for Hoppie ACARS messages
+- **Bug fixes** - boarding speed calculation, timer cancellation, and more
 
-- Start boarding/deboarding.
-- Edit script settings such as:
-	- Set your Simbrief username
-	- Set your Hoppie logon code
- 	- Set method for receiving your loadsheet (CPDLC or Telex)
-	- Turning on option that simulates some passengers not showing up after simbrief import
-	- Using front and back door for boarding / deboarding in addition to front door (default is front door only)
+## Features
 
-In addition to that it automatically:
+- Pull passenger count from SimBrief OFP
+- Realistic timed boarding/deboarding simulation
+- Random passenger variation (no-shows, late bookings)
+- Automatic door control
+- Loadsheet delivery via Hoppie ACARS (CPDLC or Telex)
+- Randomized passenger distribution affecting CG
+- Optional second door for faster boarding
+- Pause/resume capability
+- Works with externally loaded passengers (EFB, situation files)
 
-- Randomizes (also smartly randomize) the passenger distribution so it won't be always the same which will result in different trim values every flight!
-- Opens passenger/cargo doors when boarding is started and closes them after its finished.
-- Adjusts payload of the aircraft to match the boarding status.
+## Installation
 
-After you start boarding/deboarding process you can close the window (the process will run in background) and you can follow the progress of boarding/deboarding by hovering over the bottom left side of the screen.
+1. Install [FlyWithLua NG+](https://forums.x-plane.org/index.php?/files/file/38445-flywithlua-ng-next-generation-edition-for-x-plane-11-win-lin-mac/)
+2. For SimBrief integration, install [simbrief_hub](https://github.com/hotbso/simbrief_hub) plugin 1.0.1 or later
+3. Copy `Scripts/jtbBoarding.lua` and `Scripts/jtb/` folder to `<X-Plane>/Resources/plugins/FlyWithLua/Scripts/`
 
-After the boarding/deboarding will finish the application window will show itself, and boarding chime will ring informing you that boarding has completed.
+## Usage
 
-## Loadsheet Caveats
-- Currently supported airframes: all narrow bodies and the A339
-- Passenger weight must stay at the default of 100 kg
-- Cargo is currently unsupported
-- If you use Telex as delivery method you must send a PDC request prior to boarding completion. If you're not connected to a network use a fake station name like *XXXX* in order to not disturb the online systems.
-  
-## INSTALLATION
-1. Install current version of FlyWithLua NG+, if you don't have it already.
-2. For Simbrief integration to work install the [simbrief_hub](https://github.com/hotbso/simbrief_hub?tab=readme-ov-file#simbrief_hub) plugin 1.0.1 or later.
-3. Extract the zip in the "<X-Plane-Folder>/Resources/plugins/FlyWithLua/" folder. Be sure that you have all the needed files in the MODULE folder because there are essential for the script to work.
+Access via FlyWithLua Macros: **JTB - Your Toliss Boarding Companion**
 
-It should be compatible with every Toliss version.
+Or bind the commands:
+- `FlyWithLua/JTB/Toggle_jtb` - Toggle the JTB window
+- `FlyWithLua/JTB/start_boarding` - Start boarding (auto-fetches OFP)
+- `FlyWithLua/JTB/start_deboarding` - Start deboarding
+
+## Loadsheet Notes
+
+- Supported aircraft: All ToLiss narrow-bodies and A330-900
+- Passenger weight must remain at default (100 kg)
+- Cargo weight is read from aircraft but not managed by JTB
+- For Telex delivery: send a PDC request first (use fake station like `XXXX` if offline)
+
+## Support
+
+For issues and feature requests, please use the [GitHub Issues](https://github.com/julik/JTB/issues) page.
+
+## License
+
+MIT License - see original credits above for component licensing.
