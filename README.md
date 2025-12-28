@@ -43,17 +43,20 @@ JTB includes significant refactoring and improvements:
 ## Installation
 
 1. Install [FlyWithLua NG+](https://forums.x-plane.org/index.php?/files/file/38445-flywithlua-ng-next-generation-edition-for-x-plane-11-win-lin-mac/)
-2. For SimBrief integration, install [simbrief_hub](https://github.com/hotbso/simbrief_hub) plugin 1.0.1 or later
-3. Copy `Scripts/jtbBoarding.lua` and `Scripts/jtb/` folder to `<X-Plane>/Resources/plugins/FlyWithLua/Scripts/`
+2. Copy `Scripts/jtbBoarding.lua` and `Scripts/jtb/` folder to `<X-Plane>/Resources/plugins/FlyWithLua/Scripts/`
+2. Copy the contents of `Modules/` to `<X-Plane>/Resources/plugins/FlyWithLua/Modules/`
 
 ## Usage
 
 Access via FlyWithLua Macros: **JTB - Your Toliss Boarding Companion**
+If you are using SimBrief and/or Hoppie - configure your SimBrief _username_ and the Hoppie logon in the "Settings".
 
 Or bind the commands:
 - `FlyWithLua/JTB/Toggle_jtb` - Toggle the JTB window
 - `FlyWithLua/JTB/start_boarding` - Start boarding (auto-fetches OFP)
 - `FlyWithLua/JTB/start_deboarding` - Start deboarding
+
+The script will use X-Plane's speech synthesis to tell you if anything is misconfigured.
 
 ## Loadsheet Notes
 
