@@ -43,7 +43,7 @@ local s_per_pax = 4
 
 local s_per_pax_cfg = 4 -- seconds per pax in cfg
 local last_error = nil  -- nil = all good, string = error message (displayed in red)
-local SETTINGS_FILENAME = "/tobus/tobus_settings.ini"
+local SETTINGS_FILENAME = "/jtb/jtb_settings.ini"
 local SIMBRIEF_FLIGHTPLAN_FILENAME = "simbrief.json"
 local SIMBRIEF_ACCOUNT_NAME = ""
 local HOPPIE_LOGON = ""
@@ -67,7 +67,7 @@ local delayed_init_delay = 10   -- let the dust settle, seconds before delayed i
 
 local function log_msg(str)
     local temp = os.date("*t", os.time())
-    logMsg(string.format("tobus: %02d:%02d:%02d %s", temp.hour, temp.min, temp.sec, str))
+    logMsg(string.format("jtb: %02d:%02d:%02d %s", temp.hour, temp.min, temp.sec, str))
 end
 
 -------------------------------------------------------------------------------
@@ -889,7 +889,7 @@ local function read_settings()
 end
 
 local function save_settings()
-    log_msg("tobus: save_settings...")
+    log_msg("jtb: save_settings...")
     local newSettings = {}
     newSettings.simbrief = {}
     newSettings.simbrief.username = SIMBRIEF_ACCOUNT_NAME
@@ -906,7 +906,7 @@ local function save_settings()
     newSettings.doors.closeDoors = CLOSE_DOORS
     newSettings.doors.leaveDoor1Open = LEAVE_DOOR1_OPEN
     LIP.save(SCRIPT_DIRECTORY..SETTINGS_FILENAME, newSettings)
-    log_msg("tobus: done")
+    log_msg("jtb: done")
 end
 
 -- Process SimBrief response (called on successful fetch)
@@ -1020,12 +1020,12 @@ local function delayed_init()
 
     MAX_PAX_NUMBER = plane_data.max_pax
 
-    log_msg(string.format("tobus: plane: '%s', MAX_PAX_NUMBER: %d", MY_PLANE_ICAO, MAX_PAX_NUMBER))
+    log_msg(string.format("jtb: plane: '%s', MAX_PAX_NUMBER: %d", MY_PLANE_ICAO, MAX_PAX_NUMBER))
 
     reset_all_parameters()
 end
 
-function tobus_on_build(tobus_window, x, y)
+function jtb_on_build(jtb_window, x, y)
     -- Display error prominently at top if any
     if last_error ~= nil then
         imgui.PushStyleColor(imgui.constant.Col.Text, 0xFF4444FF)  -- red
@@ -1088,9 +1088,9 @@ function tobus_on_build(tobus_window, x, y)
         end
         local board_label = string.format("Board to %d", pax_no_tgt)
         if imgui.Button(board_label) and can_board then
-            if tobus_start_boarding_cmd() then
+            if jtb_start_boarding_cmd() then
                 log_msg(string.format("start boarding with %0.1f s/pax", s_per_pax))
-                toggle_tobus_window()
+                toggle_jtb_window()
                 return
             end
         end
@@ -1114,7 +1114,7 @@ function tobus_on_build(tobus_window, x, y)
             imgui.PushStyleColor(imgui.constant.Col.ButtonActive, 0xFF666666)
         end
         if imgui.Button("Deboard All") and can_deboard then
-            if tobus_start_deboarding_cmd() then
+            if jtb_start_deboarding_cmd() then
                 log_msg(string.format("start deboarding with %0.1f s/pax", s_per_pax))
             end
         end
@@ -1292,43 +1292,43 @@ end
 
 local winCloseInProgess = false
 
-function tobus_on_close()
-    isTobusWindowDisplayed = false
+function jtb_on_close()
+    isJtbWindowDisplayed = false
     winCloseInProgess = false
 end
 
-function build_tobus_window()
+function build_jtb_window()
     delayed_init()
 
-    if (isTobusWindowDisplayed) then
+    if (isJtbWindowDisplayed) then
         return
     end
-	tobus_window = float_wnd_create(900, 295, 1, true)
+	jtb_window = float_wnd_create(900, 295, 1, true)
 
     local leftCorner, height, width = XPLMGetScreenBoundsGlobal()
 
-    float_wnd_set_position(tobus_window, width / 2 - 375, height / 2)
-	float_wnd_set_title(tobus_window, "TOBUS - Your Toliss Boarding Companion " .. VERSION)
-	float_wnd_set_imgui_builder(tobus_window, "tobus_on_build")
-    float_wnd_set_onclose(tobus_window, "tobus_on_close")
+    float_wnd_set_position(jtb_window, width / 2 - 375, height / 2)
+	float_wnd_set_title(jtb_window, "JTB - Your Toliss Boarding Companion " .. VERSION)
+	float_wnd_set_imgui_builder(jtb_window, "jtb_on_build")
+    float_wnd_set_onclose(jtb_window, "jtb_on_close")
 
-    isTobusWindowDisplayed = true
+    isJtbWindowDisplayed = true
 end
 
-function toggle_tobus_window()
-    if isTobusWindowDisplayed then
+function toggle_jtb_window()
+    if isJtbWindowDisplayed then
         if not winCloseInProgess then
             winCloseInProgess = true
-            float_wnd_destroy(tobus_window) -- marks for destroy, destroy is async
+            float_wnd_destroy(jtb_window) -- marks for destroy, destroy is async
         end
         return
     end
 
-    build_tobus_window()
+    build_jtb_window()
 end
 
 -- low freq actions
-function tobus_often()
+function jtb_often()
     delayed_init_delay = delayed_init_delay - 1
     if delayed_init_delay >= 0 then return end
 
@@ -1346,7 +1346,7 @@ function tobus_often()
 end
 
 -- frame loop, efficient coding please
-function tobus_frame()
+function jtb_frame()
     local now = os.time()
 
     if current_state == State.BOARDING then
@@ -1379,7 +1379,7 @@ function tobus_frame()
 end
 
 -- main
-log_msg("TOBUS " .. VERSION .. " startup")
+log_msg("JTB " .. VERSION .. " startup")
 math.randomseed(os.time())
 
 if not SUPPORTS_FLOATING_WINDOWS then
@@ -1390,7 +1390,7 @@ end
 
 read_settings()
 
-function tobus_start_boarding_cmd()
+function jtb_start_boarding_cmd()
     last_error = nil  -- clear previous error
     delayed_init()  -- ensure plane_data etc. are initialized
 
@@ -1432,7 +1432,7 @@ function tobus_start_boarding_cmd()
     return true
 end
 
-function tobus_start_deboarding_cmd()
+function jtb_start_deboarding_cmd()
     last_error = nil  -- clear previous error
     delayed_init()  -- ensure plane_data etc. are initialized
 
@@ -1447,16 +1447,16 @@ function tobus_start_deboarding_cmd()
     return true
 end
 
-add_macro("TOBUS - Your Toliss Boarding Companion", "build_tobus_window()")
-create_command("FlyWithLua/TOBUS/Toggle_tobus", "Toggle TOBUS window", "toggle_tobus_window()", "", "")
+add_macro("JTB - Your Toliss Boarding Companion", "build_jtb_window()")
+create_command("FlyWithLua/JTB/Toggle_jtb", "Toggle JTB window", "toggle_jtb_window()", "", "")
 
-add_macro("TOBUS - Start Boarding", "tobus_start_boarding_cmd()")
-create_command("FlyWithLua/TOBUS/start_boarding", "Start Boarding", "tobus_start_boarding_cmd()", "", "")
+add_macro("JTB - Start Boarding", "jtb_start_boarding_cmd()")
+create_command("FlyWithLua/JTB/start_boarding", "Start Boarding", "jtb_start_boarding_cmd()", "", "")
 
-add_macro("TOBUS - Start Deboarding", "tobus_start_deboarding_cmd()")
-create_command("FlyWithLua/TOBUS/start_deboarding", "Start Deboarding", "tobus_start_deboarding_cmd()", "", "")
+add_macro("JTB - Start Deboarding", "jtb_start_deboarding_cmd()")
+create_command("FlyWithLua/JTB/start_deboarding", "Start Deboarding", "jtb_start_deboarding_cmd()", "", "")
 
-do_every_frame("tobus_frame()")
-do_often("tobus_often()")
+do_every_frame("jtb_frame()")
+do_often("jtb_often()")
 
 end

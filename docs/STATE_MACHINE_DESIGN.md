@@ -1,8 +1,8 @@
-# TOBUS State Machine Design
+# JTB State Machine Design
 
 ## Executive Summary
 
-This document proposes a clean state machine architecture to replace the current ad-hoc state handling in TOBUS. The current implementation uses multiple overlapping boolean flags and timestamps that can enter inconsistent states, leading to bugs around FMGS resets, HTTP blocking, and incomplete cleanup.
+This document proposes a clean state machine architecture to replace the current ad-hoc state handling in JTB. The current implementation uses multiple overlapping boolean flags and timestamps that can enter inconsistent states, leading to bugs around FMGS resets, HTTP blocking, and incomplete cleanup.
 
 ## Design Philosophy
 
@@ -40,7 +40,7 @@ Timestamps:
 **Problems with this approach:**
 
 1. **Invalid state combinations**: Nothing prevents `boardingActive = true` AND `boardingPaused = true` simultaneously
-2. **Scattered transitions**: State changes happen in `tobus_often()`, `tobus_frame()`, UI callbacks, and command handlers
+2. **Scattered transitions**: State changes happen in `jtb_often()`, `jtb_frame()`, UI callbacks, and command handlers
 3. **Magic timestamps**: Using `1E20` as "disabled" is fragile and unclear
 4. **No cleanup on transitions**: When state changes, related timers/flags may not be reset
 5. **HTTP in main loop**: Loadsheet delivery blocks the simulator
@@ -52,7 +52,7 @@ Timestamps:
 
 ### Primary States (Simplified)
 
-The states represent **what TOBUS is currently doing**, not the aircraft lifecycle:
+The states represent **what JTB is currently doing**, not the aircraft lifecycle:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -156,7 +156,7 @@ end
 This works automatically because:
 1. We check `get("AirbusFBW/NoPax")` directly - we don't track "who loaded them"
 2. If `current_pax > 0` and `!flight_in_progress()`, deboarding is allowed
-3. No dependency on SimBrief, FMGS, or any prior TOBUS operations
+3. No dependency on SimBrief, FMGS, or any prior JTB operations
 
 ### Reset Behavior
 
@@ -532,7 +532,7 @@ Buttons should also be disabled (grayed) if `flight_in_progress()` returns true.
 
 ```lua
 local function debug_state()
-    log_msg("=== TOBUS State Debug ===")
+    log_msg("=== JTB State Debug ===")
     log_msg("  current_state: " .. current_state)
     log_msg("  pax_no_tgt: " .. tostring(pax_no_tgt))
     log_msg("  pax_no_cur (script): " .. tostring(pax_no_cur))

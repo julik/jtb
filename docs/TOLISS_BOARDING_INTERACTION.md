@@ -11,12 +11,12 @@ This system has its own timers that:
 2. Trigger cabin crew announcements ("close doors and arm slides")
 3. Control ground service equipment (stairs, baggage loaders)
 
-## Current TOBUS Behavior
+## Current JTB Behavior
 
-TOBUS does **NOT** explicitly disable ToLiss's built-in boarding system. Instead, it simply **overwrites** the passenger count dataref every frame:
+JTB does **NOT** explicitly disable ToLiss's built-in boarding system. Instead, it simply **overwrites** the passenger count dataref every frame:
 
 ```lua
--- In tobus_frame() - runs EVERY frame
+-- In jtb_frame() - runs EVERY frame
 if boardingActive then
     if pax_no_cur < pax_no_tgt and now >= nextTimeBoardingCheck then
         pax_no_cur = pax_no_cur + 1
@@ -26,7 +26,7 @@ if boardingActive then
 end
 ```
 
-This creates a **race condition** where both systems write to `AirbusFBW/NoPax`. TOBUS "wins" because it writes more frequently (every frame when active).
+This creates a **race condition** where both systems write to `AirbusFBW/NoPax`. JTB "wins" because it writes more frequently (every frame when active).
 
 ## Relevant Datarefs Found
 
@@ -34,7 +34,7 @@ From `docs/toliss-datarefs.txt`:
 
 | Dataref | Purpose |
 |---------|---------|
-| `AirbusFBW/NoPax` | Current passenger count (both TOBUS and ToLiss write here) |
+| `AirbusFBW/NoPax` | Current passenger count (both JTB and ToLiss write here) |
 | `AirbusFBW/PaxDistrib` | Passenger distribution (affects CG) |
 | `AirbusFBW/PaxDoorModeArray` | Door states: 0=Closed, 1=Auto, 2=Open |
 | `AirbusFBW/CargoDoorModeArray` | Cargo door states |
@@ -92,8 +92,8 @@ Post on X-Plane.org ToLiss subforum asking for the dataref to disable ISCS board
 If a control dataref is found (e.g., `toliss_airbus/iscs/boarding_enabled`):
 
 ```lua
--- When TOBUS starts boarding, disable ToLiss's internal boarding
-function tobus_start_boarding_cmd()
+-- When JTB starts boarding, disable ToLiss's internal boarding
+function jtb_start_boarding_cmd()
     -- ... existing checks ...
 
     -- Disable ToLiss internal boarding (if dataref exists)
@@ -105,11 +105,11 @@ function tobus_start_boarding_cmd()
 end
 ```
 
-If no control dataref exists, the current "overwrite every frame" approach is the only option, but it's fragile and could cause visual glitches if ToLiss's timer fires between TOBUS updates.
+If no control dataref exists, the current "overwrite every frame" approach is the only option, but it's fragile and could cause visual glitches if ToLiss's timer fires between JTB updates.
 
 ## Related Commands
 
-Commands used by TOBUS that interact with ToLiss:
+Commands used by JTB that interact with ToLiss:
 
 | Command | Purpose |
 |---------|---------|

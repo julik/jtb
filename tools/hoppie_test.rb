@@ -19,7 +19,7 @@ end
 
 logon = ARGV[0]
 callsign = ARGV[1]
-message = ARGV[2] || "Test message from TOBUS"
+message = ARGV[2] || "Test message from JTB"
 
 uri = URI("https://www.hoppie.nl/acars/system/connect.html")
 

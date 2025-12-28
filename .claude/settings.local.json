@@ -13,7 +13,11 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(cat:*)",
       "Bash(python3:*)",
-      "WebFetch(domain:developer.x-plane.com)"
+      "WebFetch(domain:developer.x-plane.com)",
+      "Bash(ls:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)"
     ]
   }
 }
