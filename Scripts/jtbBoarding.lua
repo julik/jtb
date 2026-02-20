@@ -633,7 +633,8 @@ local function generate_prelim_loadsheet()
     send_loadsheet(ls_content)
 end
 
-local function open_doors()
+-- Helper: actually open doors (set to 2)
+local function open_doors_now()
     passengerDoorArray[0] = 2
     if USE_SECOND_DOOR or jw1_connected then
         if MY_PLANE_ICAO == "A319" or MY_PLANE_ICAO == "A20N" or MY_PLANE_ICAO == "A320" or MY_PLANE_ICAO == "A339" then
@@ -645,6 +646,25 @@ local function open_doors()
     end
     cargoDoorArray[0] = 2
     cargoDoorArray[1] = 2
+end
+
+local function open_doors()
+    -- Workaround: ToLiss may auto-arm slides after sitting on stand for a while.
+    -- Explicitly disarm (set to 0) first, then open (set to 2) on the next frame
+    -- so that ToLiss logic has time to process the disarm.
+    passengerDoorArray[0] = 0
+    if USE_SECOND_DOOR or jw1_connected then
+        if MY_PLANE_ICAO == "A319" or MY_PLANE_ICAO == "A20N" or MY_PLANE_ICAO == "A320" or MY_PLANE_ICAO == "A339" then
+            passengerDoorArray[2] = 0
+        end
+        if MY_PLANE_ICAO == "A321" or MY_PLANE_ICAO == "A21N" or MY_PLANE_ICAO == "A346" then
+            passengerDoorArray[6] = 0
+        end
+    end
+    cargoDoorArray[0] = 0
+    cargoDoorArray[1] = 0
+    -- Schedule actual opening for next frame
+    Timers.schedule("open_doors", 0.05, open_doors_now)
 end
 
 local function close_doors()
