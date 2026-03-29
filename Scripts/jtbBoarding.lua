@@ -242,14 +242,14 @@ local plane_db = {
         geometry = {
             mac = 4.19,
             lemac = 12.33,
-            fwd_cargo_arm = 5.15,
-            aft_cargo_arm = 19.52
+            fwd_cargo_arm = 5.147,
+            aft_cargo_arm = 19.496
         },
         cg_data = {
             pax_tab   = {   0,   25,   50,   75,  100,  125,  150,  175,  200,  225, 244},
             zfwcg_035 = {29.1, 24.3, 20.9, 18.9, 18.0, 18.1, 19.0, 20.8, 23.2, 26.2, 28.9},
             zfwcg_050 = {29.1, 29.1, 29.1, 29.1, 29.0, 29.0, 29.0, 29.0, 29.0, 29.0, 28.9},
-            zfwcg_060 = {27.5, 32.3, 34.5, 35.8, 36.4, 36.3, 35.7, 34.5, 32.8, 30.8, 29.1}
+            zfwcg_060 = {29.1, 32.3, 34.5, 35.8, 36.4, 36.3, 35.7, 34.5, 32.8, 30.8, 28.9}
         }
     },
 
@@ -261,8 +261,8 @@ local plane_db = {
         geometry = {
             mac = 4.19,
             lemac = 12.33,
-            fwd_cargo_arm = 5.15,
-            aft_cargo_arm = 19.52
+            fwd_cargo_arm = 5.147,
+            aft_cargo_arm = 19.496
         },
         cg_data = {
             pax_tab   = {   0,   25,   50,   75,  100,  125,  150,  175,  200},
@@ -297,10 +297,15 @@ local plane_db = {
         geometry = {
             mac = 9.17,
             lemac = 28.8,
-            fwd_cargo_arm = 11.04,
-            aft_cargo_arm = 43.97
+            fwd_cargo_arm = 11.044,
+            aft_cargo_arm = 43.967
         },
-        -- volunteers welcome for building the cg table
+        cg_data = {
+            pax_tab   = {   0,   25,   50,   75,  100,  125,  150,  175,  200,  225,  250,  275,  300,  325,  350,  375,  400,  425,  440},
+            zfwcg_035 = {24.6, 23.5, 22.6, 21.8, 21.1, 20.6, 20.3, 20.1, 20.0, 20.0, 20.2, 20.5, 20.9, 21.4, 22.1, 22.8, 23.6, 24.6, 25.2},
+            zfwcg_050 = {24.6, 24.7, 24.7, 24.8, 24.8, 24.8, 24.9, 24.9, 24.9, 25.0, 25.0, 25.0, 25.0, 25.1, 25.1, 25.1, 25.1, 25.2, 25.2},
+            zfwcg_060 = {24.6, 25.5, 26.2, 26.8, 27.3, 27.6, 27.9, 28.1, 28.2, 28.2, 28.2, 28.0, 27.8, 27.5, 27.1, 26.7, 26.2, 25.6, 25.2}
+        }
     }
 }
 
@@ -522,6 +527,26 @@ local function calculate_cargo_zfwcg(zfwcg_pax, pax_weight, fwd_cargo, aft_cargo
     local new_zfwcg = (new_arm - lemac) / mac * 100
 
     return new_zfwcg
+end
+
+local function load_cargo()
+    if not ofp_data or not ofp_data.cargo then return end
+
+    local cargo_kg = ofp_data.cargo
+    if ofp_data.units == "lbs" then cargo_kg = cargo_kg / kg2lbs end
+
+    local cargo_kg_2 = math.floor(cargo_kg / 2)
+    log_msg(string.format("cargo loaded %d kg (fwd: %d, aft: %d)", cargo_kg, cargo_kg_2, cargo_kg_2))
+    set("AirbusFBW/FwdCargo", cargo_kg_2)
+    set("AirbusFBW/AftCargo", cargo_kg_2)
+    command_once("AirbusFBW/SetWeightAndCG")
+end
+
+local function unload_cargo()
+    log_msg("unloading cargo")
+    set("AirbusFBW/FwdCargo", 0)
+    set("AirbusFBW/AftCargo", 0)
+    command_once("AirbusFBW/SetWeightAndCG")
 end
 
 local function format_ls_row(label, value, digit)
@@ -815,6 +840,7 @@ local function on_enter_state(state, from_state)
 
     elseif state == State.BOARDING then
         open_doors()
+        load_cargo()
         set("AirbusFBW/NoPax", 0)
         pax_no_cur = 0
         set("AirbusFBW/PaxDistrib", clamp(gauss(0.5, 0.1), 0.35, 0.6))
@@ -828,6 +854,7 @@ local function on_enter_state(state, from_state)
 
     elseif state == State.DEBOARDING then
         open_doors()
+        unload_cargo()
         pax_no_deboarding = tls_pax_no[0]
         pax_no_cur = pax_no_deboarding
         -- Calculate effective speed based on door configuration
@@ -930,11 +957,13 @@ local function set_pax_now(target)
 end
 
 local function board_instantly()
+    load_cargo()
     set_pax_now(pax_no_tgt)
     close_doors()
 end
 
 local function deboard_instantly()
+    unload_cargo()
     set_pax_now(0)
     open_doors()
 end
@@ -1069,6 +1098,7 @@ local function process_simbrief_response(response)
         operator = ofp.general.icao_airline,
         units = ofp.params.units,
         taxi_fuel = tonumber(ofp.fuel.taxi),
+        cargo = tonumber(ofp.weights.freight),
         mzfw = tonumber(ofp.weights.max_zfw),
         mtow = tonumber(ofp.weights.max_tow),
     }
