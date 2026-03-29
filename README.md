@@ -43,8 +43,9 @@ JTB includes significant refactoring and improvements:
 ## Installation
 
 1. Install [FlyWithLua NG+](https://forums.x-plane.org/index.php?/files/file/38445-flywithlua-ng-next-generation-edition-for-x-plane-11-win-lin-mac/)
-2. Copy `Scripts/jtbBoarding.lua` and `Scripts/jtb/` folder to `<X-Plane>/Resources/plugins/FlyWithLua/Scripts/`
-2. Copy the contents of `Modules/` to `<X-Plane>/Resources/plugins/FlyWithLua/Modules/`
+2. Copy `Scripts/jtbBoarding.lua` and the `Scripts/jtb/` folder into `<X-Plane>/Resources/plugins/FlyWithLua/Scripts/`
+
+The required Lua modules (json, LIP) are bundled in `Scripts/jtb/modules/` and loaded automatically — no separate module installation needed.
 
 ## Usage
 
