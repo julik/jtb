@@ -65,8 +65,8 @@ local delayed_init_delay = 10   -- let the dust settle, seconds before delayed i
 -------------------------------------------------------------------------------
 
 local function log_msg(str)
-    local temp = os.date("*t", os.time())
-    logMsg(string.format("jtb: %02d:%02d:%02d %s", temp.hour, temp.min, temp.sec, str))
+    local t_now = os.date("*t", os.time())
+    logMsg(string.format("jtb: %02d:%02d:%02d %s", t_now.hour, t_now.min, t_now.sec, str))
 end
 
 -------------------------------------------------------------------------------
